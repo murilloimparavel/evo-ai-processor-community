@@ -58,6 +58,7 @@ logs/
 *.sqlite
 *.sqlite3
 backup/
+backups/
 
 # Local
 local_settings.py

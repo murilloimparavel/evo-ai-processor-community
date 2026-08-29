@@ -28,12 +28,20 @@
 """
 
 from typing import Any, Dict, List
+import keyword
 from google.adk.tools import FunctionTool
 import requests
 import json
 import urllib.parse
 from src.utils.logger import setup_logger
-from src.services.adk.custom_tools import CustomToolBuilder, strip_modes_meta
+from src.services.adk.custom_tools import (
+    CustomToolBuilder,
+    configure_http_tool_signature,
+    configured_param_value,
+    is_input_param_definition,
+    normalize_http_tool_kwargs,
+    strip_modes_meta,
+)
 from src.services.adk.tools import exit_loop
 from src.services.adk.tools import create_text_to_speech_tool
 
@@ -62,7 +70,7 @@ class ToolBuilder:
         def http_tool(**kwargs):
             try:
                 # Combines default values with provided values
-                all_values = {**values, **kwargs}
+                all_values = {**values, **normalize_http_tool_kwargs(http_tool, kwargs)}
 
                 # Substitutes placeholders in headers
                 processed_headers = {
@@ -73,10 +81,11 @@ class ToolBuilder:
                 # Processes path parameters
                 url = endpoint
                 for param, value in path_params.items():
-                    if param in all_values:
+                    found, replacement = configured_param_value(param, value, all_values)
+                    if found:
                         # URL encode the value for URL safe characters
                         replacement_value = urllib.parse.quote(
-                            str(all_values[param]), safe=""
+                            str(replacement), safe=""
                         )
                         url = url.replace(f"{{{param}}}", replacement_value)
 
@@ -86,6 +95,12 @@ class ToolBuilder:
                     if isinstance(value, list):
                         # If the value is a list, join with comma
                         query_params_dict[param] = ",".join(value)
+                    elif is_input_param_definition(value):
+                        found, resolved_value = configured_param_value(
+                            param, value, all_values
+                        )
+                        if found:
+                            query_params_dict[param] = resolved_value
                     elif param in all_values:
                         # If the parameter is in the values, use the provided value
                         query_params_dict[param] = all_values[param]
@@ -192,6 +207,13 @@ class ToolBuilder:
         for param, value in query_params.items():
             if isinstance(value, list):
                 param_docs.append(f"{param}: List[{', '.join(value)}]")
+            elif is_input_param_definition(value):
+                required = "Required" if value.get("required", False) else "Optional"
+                param_docs.append(
+                    f"{param}{'_' if keyword.iskeyword(param) else ''} "
+                    f"({value.get('type', 'string')}, {required}): "
+                    f"{value.get('description', '')}"
+                )
             else:
                 param_docs.append(f"{param}: {value}")
 
@@ -220,6 +242,9 @@ class ToolBuilder:
 
         # Defines the function name to be used by the ADK
         http_tool.__name__ = name
+        configure_http_tool_signature(
+            http_tool, path_params, query_params, body_params, values
+        )
 
         return FunctionTool(func=http_tool)
 

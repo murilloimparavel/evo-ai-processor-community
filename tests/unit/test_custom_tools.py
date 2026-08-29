@@ -335,3 +335,70 @@ class TestReservedMetadataKeysNeverReachTheWire:
         )
 
         assert sent["params"] == {"format": "json", "lang": "pt"}
+
+
+@pytest.mark.parametrize("builder", BUILDERS, ids=lambda b: b.__name__)
+class TestTypedHttpInputs:
+    def test_typed_query_inputs_are_exposed_and_sent(self, builder):
+        config = {
+            "name": "search_stays",
+            "description": "Searches available stays",
+            "method": "GET",
+            "endpoint": "https://example.test/search",
+            "parameters": {
+                "query_params": {
+                    "from": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Check-in in YYYY-MM-DD.",
+                    },
+                    "persons": {
+                        "type": "integer",
+                        "required": True,
+                        "description": "Total guests.",
+                    },
+                }
+            },
+            "values": {},
+        }
+        built = builder()._create_http_tool(config)
+        signature = inspect.signature(built.func)
+
+        assert signature.parameters["from_"].annotation is str
+        assert signature.parameters["persons"].annotation is int
+        assert signature.parameters["from_"].default is inspect.Parameter.empty
+
+        target = f"{builder.__module__}.requests.request"
+        with patch(target) as request:
+            request.return_value = MagicMock(status_code=200, json=lambda: {"ok": True})
+            built.func(**{"from_": "2026-09-10", "persons": 2})
+
+        assert request.call_args.kwargs["params"] == {
+            "from": "2026-09-10",
+            "persons": 2,
+        }
+
+    def test_missing_typed_input_never_sends_its_description(self, builder):
+        config = {
+            "name": "search_stays",
+            "description": "Searches available stays",
+            "method": "GET",
+            "endpoint": "https://example.test/search",
+            "parameters": {
+                "query_params": {
+                    "from": {
+                        "type": "string",
+                        "required": True,
+                        "description": "Check-in in YYYY-MM-DD.",
+                    }
+                }
+            },
+            "values": {},
+        }
+        built = builder()._create_http_tool(config)
+        target = f"{builder.__module__}.requests.request"
+        with patch(target) as request:
+            request.return_value = MagicMock(status_code=200, json=lambda: {"ok": True})
+            built.func()
+
+        assert request.call_args.kwargs["params"] == {}

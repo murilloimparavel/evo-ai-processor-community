@@ -1,0 +1,6 @@
+FROM evoapicloud/evo-ai-processor-community:latest
+
+# Keep the upstream processor intact and overlay only the custom HTTP tool
+# implementation.  The image tag is pinned by the deployment compose file.
+COPY src/services/adk/custom_tools.py /app/src/services/adk/custom_tools.py
+COPY src/services/adk/tool_builder.py /app/src/services/adk/tool_builder.py

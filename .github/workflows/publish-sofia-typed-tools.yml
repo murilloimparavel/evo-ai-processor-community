@@ -1,0 +1,32 @@
+name: Publish Sofia typed-tools image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/services/adk/custom_tools.py"
+      - "src/services/adk/tool_builder.py"
+      - "Dockerfile.sofia-typed-tools"
+      - ".github/workflows/publish-sofia-typed-tools.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.sofia-typed-tools
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/evo-ai-processor-community:sofia-typed-schema-20260829

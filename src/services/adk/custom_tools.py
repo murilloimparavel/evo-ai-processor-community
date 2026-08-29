@@ -27,6 +27,8 @@
 └──────────────────────────────────────────────────────────────────────────────┘
 """
 
+import inspect
+import keyword
 from typing import Any, Dict, List, Optional
 from google.adk.tools import FunctionTool
 from google.adk.tools.tool_context import ToolContext
@@ -51,6 +53,91 @@ def strip_modes_meta(values: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         for key, value in (values or {}).items()
         if key not in MODES_META_KEYS
     }
+
+
+HTTP_PARAM_TYPES = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
+
+
+def is_input_param_definition(value: Any) -> bool:
+    """Return True for the typed parameter format used by custom HTTP tools.
+
+    Legacy scalar query/path entries are literal defaults, not model inputs.  A
+    typed object makes the distinction explicit and lets the ADK generate a
+    real function schema instead of seeing only ``**kwargs``.
+    """
+    return isinstance(value, dict) and "type" in value
+
+
+def configure_http_tool_signature(
+    func,
+    path_params: Dict[str, Any],
+    query_params: Dict[str, Any],
+    body_params: Dict[str, Any],
+    values: Dict[str, Any],
+) -> None:
+    """Expose typed custom-tool inputs to ADK/OpenAPI function introspection."""
+    parameters = []
+    aliases = {}
+
+    def add_parameter(param: str, definition: Dict[str, Any]) -> None:
+        safe_name = param if param.isidentifier() and not keyword.iskeyword(param) else f"{param}_"
+        if not safe_name.isidentifier() or any(
+            p.name == safe_name for p in parameters
+        ):
+            return
+        required = bool(definition.get("required", False))
+        default = inspect.Parameter.empty if required else definition.get(
+            "default", values.get(param, None)
+        )
+        parameters.append(
+            inspect.Parameter(
+                safe_name,
+                inspect.Parameter.KEYWORD_ONLY,
+                default=default,
+                annotation=HTTP_PARAM_TYPES.get(definition.get("type"), str),
+            )
+        )
+        aliases[safe_name] = param
+
+    for params in (path_params, query_params):
+        for param, definition in params.items():
+            if is_input_param_definition(definition):
+                add_parameter(param, definition)
+
+    for param, definition in body_params.items():
+        if isinstance(definition, dict):
+            add_parameter(param, definition)
+
+    func.__signature__ = inspect.Signature(
+        parameters=parameters, return_annotation=str
+    )
+    func.__evo_http_parameter_aliases__ = aliases
+
+
+def configured_param_value(
+    param: str, definition: Any, all_values: Dict[str, Any]
+) -> tuple[bool, Any]:
+    """Resolve a typed input without ever falling back to its description."""
+    if not is_input_param_definition(definition):
+        return True, definition
+    if param in all_values and all_values[param] is not None:
+        return True, all_values[param]
+    if "default" in definition:
+        return True, definition["default"]
+    return False, None
+
+
+def normalize_http_tool_kwargs(func, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate Python-safe schema names back to the HTTP parameter names."""
+    aliases = getattr(func, "__evo_http_parameter_aliases__", {})
+    return {aliases.get(key, key): value for key, value in kwargs.items()}
 
 
 def exit_loop(tool_context: ToolContext):
@@ -83,7 +170,7 @@ class CustomToolBuilder:
         def http_tool(**kwargs):
             try:
                 # Combines default values with provided values
-                all_values = {**values, **kwargs}
+                all_values = {**values, **normalize_http_tool_kwargs(http_tool, kwargs)}
 
                 # Substitutes placeholders in headers
                 processed_headers = {
@@ -94,10 +181,11 @@ class CustomToolBuilder:
                 # Processes path parameters
                 url = endpoint
                 for param, value in path_params.items():
-                    if param in all_values:
+                    found, replacement = configured_param_value(param, value, all_values)
+                    if found:
                         # URL encode the value for URL safe characters
                         replacement_value = urllib.parse.quote(
-                            str(all_values[param]), safe=""
+                            str(replacement), safe=""
                         )
                         url = url.replace(f"{{{param}}}", replacement_value)
 
@@ -107,6 +195,12 @@ class CustomToolBuilder:
                     if isinstance(value, list):
                         # If the value is a list, join with comma
                         query_params_dict[param] = ",".join(value)
+                    elif is_input_param_definition(value):
+                        found, resolved_value = configured_param_value(
+                            param, value, all_values
+                        )
+                        if found:
+                            query_params_dict[param] = resolved_value
                     elif param in all_values:
                         # If the parameter is in the values, use the provided value
                         query_params_dict[param] = all_values[param]
@@ -175,6 +269,13 @@ class CustomToolBuilder:
         for param, value in query_params.items():
             if isinstance(value, list):
                 param_docs.append(f"{param}: List[{', '.join(value)}]")
+            elif is_input_param_definition(value):
+                required = "Required" if value.get("required", False) else "Optional"
+                param_docs.append(
+                    f"{param}{'_' if keyword.iskeyword(param) else ''} "
+                    f"({value.get('type', 'string')}, {required}): "
+                    f"{value.get('description', '')}"
+                )
             else:
                 param_docs.append(f"{param}: {value}")
 
@@ -203,6 +304,9 @@ class CustomToolBuilder:
 
         # Defines the function name to be used by the ADK
         http_tool.__name__ = name
+        configure_http_tool_signature(
+            http_tool, path_params, query_params, body_params, values
+        )
 
         return FunctionTool(func=http_tool)
 
