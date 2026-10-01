@@ -75,6 +75,7 @@ class StandardRunner:
             logger.info(
                 f"Starting execution of agent {agent_id} for external_id {external_id}"
             )
+            is_inactivity_action = (metadata or {}).get("evoai_crm_event") == "inactivity_action"
 
             # Extension point: capability gate. Community default returns True
             # for every capability, so behavior is unchanged unless a consumer
@@ -106,6 +107,8 @@ class StandardRunner:
 
             # Get and build agent
             root_agent, state_params = await self.utils.get_and_build_agent(agent_id)
+            if is_inactivity_action:
+                self._disable_agent_tools(root_agent)
 
             # Setup session
             adk_session_id = self.utils.create_session_id(
@@ -157,7 +160,7 @@ class StandardRunner:
                                 compression_interval = agent_config.get("memory_medium_term_compression_interval")
 
                     # Only save to memory if load_memory is enabled
-                    if load_memory_enabled:
+                    if load_memory_enabled and not is_inactivity_action:
                         # Combine message with transcribed texts
                         user_content = message
                         if transcribed_texts:
@@ -183,7 +186,12 @@ class StandardRunner:
                     agent = await get_agent(self.db, agent_id)
                     if agent and agent.config:
                         agent_config = agent.config if isinstance(agent.config, dict) else {}
-                        if isinstance(agent_config, dict) and agent_config.get("preload_memory") and agent_config.get("load_memory"):
+                        if (
+                            not is_inactivity_action
+                            and isinstance(agent_config, dict)
+                            and agent_config.get("preload_memory")
+                            and agent_config.get("load_memory")
+                        ):
                             logger.info(f"Preloading memory for agent {agent_id}, user {effective_user_id}")
                             # Call memory load endpoint directly via HTTP to get medium_term summaries
                             from src.services.memory_service import HttpMemoryService
@@ -549,3 +557,20 @@ class StandardRunner:
         except Exception as e:
             logger.error(f"Internal error processing request: {str(e)}", exc_info=True)
             raise InternalServerError(str(e))
+
+    @staticmethod
+    def _disable_agent_tools(root_agent) -> None:
+        """Disable tools throughout this per-request agent tree for follow-ups."""
+        stack = [root_agent]
+        visited = set()
+
+        while stack:
+            agent = stack.pop()
+            if agent is None or id(agent) in visited:
+                continue
+            visited.add(id(agent))
+
+            if hasattr(agent, "tools"):
+                agent.tools = []
+
+            stack.extend(getattr(agent, "sub_agents", None) or [])
