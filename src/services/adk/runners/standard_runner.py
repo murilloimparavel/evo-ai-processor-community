@@ -49,6 +49,20 @@ import uuid
 logger = setup_logger(__name__)
 
 
+def _event_has_successful_terminal_handoff(event_dict: Dict[str, Any]) -> bool:
+    """Recognize a successful CRM handoff tool result in a serialized ADK event."""
+    content = event_dict.get("content")
+    parts = content.get("parts", []) if isinstance(content, dict) else []
+    for part in parts:
+        function_response = part.get("function_response") if isinstance(part, dict) else None
+        if not isinstance(function_response, dict) or function_response.get("name") != "transfer_to_human":
+            continue
+        response = function_response.get("response")
+        if isinstance(response, dict) and response.get("status") == "success" and response.get("terminal_handoff") is True:
+            return True
+    return False
+
+
 class StandardRunner:
     """Runner for non-streaming agent execution."""
 
@@ -394,6 +408,7 @@ class StandardRunner:
             # Run agent and collect response
             final_response_text = "No response captured."
             message_history = []
+            terminal_handoff = False
 
             try:
                 total_prompt_tokens = 0
@@ -426,6 +441,10 @@ class StandardRunner:
                             event_dict = event.__dict__
                         event_dict = convert_sets(event_dict)
                         message_history.append(event_dict)
+
+                        # Carry a trusted terminal-handoff signal only when the
+                        # CRM transfer tool itself returned a successful result.
+                        terminal_handoff = terminal_handoff or _event_has_successful_terminal_handoff(event_dict)
                         
                         # Save event to memory individually (FIFO)
                         if memory_service and hasattr(memory_service, "add_event_to_memory"):
@@ -549,6 +568,7 @@ class StandardRunner:
             return {
                 "final_response": final_response_text,
                 "message_history": message_history,
+                "terminal_handoff": terminal_handoff,
             }
 
         except AgentNotFoundError as e:
