@@ -827,6 +827,7 @@ def extract_structured_from_message_history(
 def build_a2a_artifacts(
     final_response: str,
     structured: Optional[Dict[str, Any]] = None,
+    terminal_handoff: bool = False,
 ) -> List[Dict[str, Any]]:
     artifacts: List[Dict[str, Any]] = [
         {
@@ -836,10 +837,14 @@ def build_a2a_artifacts(
     ]
 
     if not structured:
+        if terminal_handoff:
+            artifacts.append({"artifactId": str(uuid.uuid4()), "parts": [{"type": "data", "data": {"terminal_handoff": True}}]})
         return artifacts
 
     input_obj = structured.get("input") if isinstance(structured, dict) else None
     if not isinstance(input_obj, dict):
+        if terminal_handoff:
+            artifacts.append({"artifactId": str(uuid.uuid4()), "parts": [{"type": "data", "data": {"terminal_handoff": True}}]})
         return artifacts
 
     if input_obj.get("type") == "select" and isinstance(input_obj.get("items"), list):
@@ -856,6 +861,9 @@ def build_a2a_artifacts(
                 ],
             }
         )
+
+    if terminal_handoff:
+        artifacts.append({"artifactId": str(uuid.uuid4()), "parts": [{"type": "data", "data": {"terminal_handoff": True}}]})
 
     return artifacts
 
@@ -1198,7 +1206,11 @@ async def handle_message_send(
         }
 
         structured = extract_structured_from_message_history(result.get("message_history"))
-        artifacts = build_a2a_artifacts(final_response, structured)
+        artifacts = build_a2a_artifacts(
+            final_response,
+            structured,
+            terminal_handoff=result.get("terminal_handoff") is True,
+        )
 
         # Create A2A compliant response with history
         task_response = create_task_response(

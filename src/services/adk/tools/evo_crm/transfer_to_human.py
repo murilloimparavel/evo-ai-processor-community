@@ -67,6 +67,23 @@ def _extract_transfer_rules_from_metadata(tool_context: Optional[ToolContext]) -
     return []
 
 
+def _resolve_transfer_target(rule: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """Resolve a configured target without guessing whether it is a user or team."""
+    target_type = rule.get("target_type")
+    target_id = rule.get("target_id")
+    if target_type == "team" and target_id:
+        return None, str(target_id)
+    if target_type in {"agent", "human"} and target_id:
+        return str(target_id), None
+
+    # Temporary compatibility for configurations predating target_type/target_id.
+    if rule.get("transferTo") == "team" and rule.get("teamId"):
+        return None, str(rule["teamId"])
+    if rule.get("transferTo") == "human" and rule.get("userId"):
+        return str(rule["userId"]), None
+    return None, None
+
+
 def create_transfer_to_human_tool(
     transfer_rules: Optional[List[Dict[str, Any]]] = None
 ) -> FunctionTool:
@@ -77,7 +94,8 @@ def create_transfer_to_human_tool(
 
     Args:
         transfer_rules: Optional list of transfer rules from agent config.
-                       Each rule should have: transferTo, userId, teamId, instructions, etc.
+                       Rules use target_type/target_id. Legacy transferTo/userId/teamId
+                       is accepted temporarily for existing agents.
     """
     
     client = EvoCrmClient()
@@ -87,6 +105,7 @@ def create_transfer_to_human_tool(
         assignee_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
         team_id: Optional[str] = None,
+        route_key: Optional[str] = None,
         reason: Optional[str] = None,
         tool_context: Optional[ToolContext] = None,
     ) -> Dict[str, Any]:
@@ -102,11 +121,8 @@ def create_transfer_to_human_tool(
         
         Transfer Rules:
         If transfer_rules are configured in the agent, use them to determine who to transfer to.
-        Each rule has:
-        - transferTo: "human" or "team"
-        - userId: ID of the user to transfer to (if transferTo is "human")
-        - teamId: ID of the team to transfer to (if transferTo is "team")
-        - instructions: When to use this rule (e.g., "quando o contato pedir")
+        Configured rules are authoritative. Select route_key when multiple routes
+        are present; the server resolves its target type and ID.
         
         If no transfer_rules are configured, you must provide assignee_id or team_id.
         
@@ -149,32 +165,67 @@ def create_transfer_to_human_tool(
             if not available_transfer_rules and tool_context:
                 available_transfer_rules = _extract_transfer_rules_from_metadata(tool_context)
             
-            # Determine assignee_id and team_id from transfer_rules if not provided
-            effective_assignee_id = assignee_id
-            effective_team_id = team_id
-            
-            if not effective_assignee_id and not effective_team_id and available_transfer_rules:
-                # Use the first transfer rule that matches "human" or "team"
-                # In the future, this could be enhanced to evaluate rule conditions
-                for rule in available_transfer_rules:
-                    if rule.get("transferTo") == "human" and rule.get("userId"):
-                        effective_assignee_id = rule.get("userId")
-                        logger.info(f"Using transfer rule to assign to user {effective_assignee_id}")
-                        if rule.get("instructions"):
-                            reason = reason or rule.get("instructions")
-                        break
-                    elif rule.get("transferTo") == "team" and rule.get("teamId"):
-                        effective_team_id = rule.get("teamId")
-                        logger.info(f"Using transfer rule to assign to team {effective_team_id}")
-                        if rule.get("instructions"):
-                            reason = reason or rule.get("instructions")
-                        break
+            # Configured rules are authoritative. Model-supplied IDs cannot
+            # override a route or turn a team ID into an assignee ID.
+            effective_assignee_id: Optional[str] = None
+            effective_team_id: Optional[str] = None
+            if available_transfer_rules:
+                rules = [
+                    (f"route_{index}", rule)
+                    for index, rule in enumerate(available_transfer_rules, 1)
+                    if isinstance(rule, dict)
+                ]
+                if route_key:
+                    selected = next(
+                        (
+                            rule
+                            for generated_key, rule in rules
+                            if str(rule.get("id", generated_key)) == route_key
+                        ),
+                        None,
+                    )
+                    if selected is None:
+                        return {
+                            "status": "error",
+                            "message": "route_key does not match a configured transfer rule.",
+                            "conversation_id": effective_conversation_id,
+                        }
+                elif len(rules) == 1:
+                    selected = rules[0][1]
+                else:
+                    return {
+                        "status": "error",
+                        "message": "route_key is required when multiple transfer rules are configured.",
+                        "conversation_id": effective_conversation_id,
+                    }
+
+                effective_assignee_id, effective_team_id = _resolve_transfer_target(selected)
+                if not effective_assignee_id and not effective_team_id:
+                    return {
+                        "status": "error",
+                        "message": "Configured transfer rule has an unsupported or incomplete target.",
+                        "conversation_id": effective_conversation_id,
+                    }
+                reason = reason or selected.get("conditions", selected.get("instructions"))
+            else:
+                if assignee_id and team_id:
+                    return {
+                        "status": "error",
+                        "message": "Provide only one transfer target.",
+                        "conversation_id": effective_conversation_id,
+                    }
+                effective_assignee_id = assignee_id
+                effective_team_id = team_id
             
             # Validate that we have either assignee_id or team_id
             if not effective_assignee_id and not effective_team_id:
                 return {
                     "status": "error",
-                    "message": "Either assignee_id or team_id is required. If transfer_rules are configured, they will be used automatically. Otherwise, please provide assignee_id or team_id explicitly.",
+                    "message": (
+                        "Either assignee_id or team_id is required. If multiple transfer "
+                        "rules are configured, provide a valid route_key. Without "
+                        "configured rules, provide exactly one target ID."
+                    ),
                     "conversation_id": effective_conversation_id,
                 }
             
@@ -240,6 +291,7 @@ def create_transfer_to_human_tool(
                     "conversation_id": effective_conversation_id,
                     "assignee_id": effective_assignee_id,
                     "team_id": effective_team_id,
+                    "terminal_handoff": True,
                     "reason": reason,
                     "details": response,
                 }
@@ -292,16 +344,13 @@ def create_transfer_to_human_tool(
     if default_transfer_rules:
         transfer_rules_doc = "\n\nConfigured Transfer Rules:\n"
         for i, rule in enumerate(default_transfer_rules, 1):
-            transfer_to = rule.get("transferTo", "unknown")
-            instructions = rule.get("instructions", "")
-            if transfer_to == "human":
-                user_name = rule.get("userName", rule.get("userId", "unknown"))
-                transfer_rules_doc += f"  {i}. Transfer to human: {user_name}"
-            elif transfer_to == "team":
-                team_name = rule.get("teamName", rule.get("teamId", "unknown"))
-                transfer_rules_doc += f"  {i}. Transfer to team: {team_name}"
-            if instructions:
-                transfer_rules_doc += f" ({instructions})"
+            target_type = rule.get("target_type", rule.get("transferTo", "unknown"))
+            target_name = rule.get("target_name", rule.get("teamName", rule.get("userName", target_type)))
+            route_key = rule.get("id", f"route_{i}")
+            conditions = rule.get("conditions", rule.get("instructions", ""))
+            transfer_rules_doc += f"  {i}. route_key={route_key}: transfer to {target_name}"
+            if conditions:
+                transfer_rules_doc += f" when {conditions}"
             transfer_rules_doc += "\n"
     
     transfer_to_human.__doc__ = f"""Transfer a conversation to a human agent.
@@ -309,11 +358,12 @@ def create_transfer_to_human_tool(
     Use this tool when the user requests human assistance, when complex issues require
     human expertise, or when escalation is needed based on transfer rules.
     
-    If transfer_rules are configured, they will be used automatically. Otherwise,
-    you must provide assignee_id or team_id.{transfer_rules_doc}
+    Configured transfer rules are authoritative. When multiple rules exist, pass
+    the matching route_key. Without configured rules, provide exactly one target ID.{transfer_rules_doc}
     
     Args:
         conversation_id: The ID of the conversation to transfer (optional, auto-extracted)
+        route_key: Configured route to use (required only when multiple rules exist)
         assignee_id: The ID of the human agent to assign to (optional if transfer_rules configured)
         team_id: Optional team ID to assign to a team instead (optional if transfer_rules configured)
         reason: Optional reason for transfer (for logging)
@@ -323,4 +373,3 @@ def create_transfer_to_human_tool(
     """
     
     return FunctionTool(func=transfer_to_human)
-

@@ -714,21 +714,23 @@ class LlmAgentBuilder:
             transfer_rules = agent.config.get("transfer_rules", [])
             if transfer_rules:
                 rules_text = []
-                for rule in transfer_rules:
-                    if rule.get("transferTo") == "human" and rule.get("userId"):
-                        user_name = rule.get("userName", "agent")
-                        instructions = rule.get("instructions", "")
-                        rules_text.append(f"- Transfer to human ({user_name})" + (f": {instructions}" if instructions else ""))
-                    elif rule.get("transferTo") == "team" and rule.get("teamId"):
-                        team_name = rule.get("teamName", "team")
-                        instructions = rule.get("instructions", "")
-                        rules_text.append(f"- Transfer to team ({team_name})" + (f": {instructions}" if instructions else ""))
+                for index, rule in enumerate(transfer_rules, 1):
+                    target_type = rule.get("target_type", rule.get("transferTo"))
+                    target_id = rule.get("target_id") or rule.get("teamId") or rule.get("userId")
+                    if target_type in {"agent", "human", "team"} and target_id:
+                        target_name = rule.get("target_name", rule.get("teamName", rule.get("userName", target_type)))
+                        route_key = rule.get("id", f"route_{index}")
+                        conditions = rule.get("conditions", rule.get("instructions", ""))
+                        rules_text.append(
+                            f"- route_key={route_key}: transfer to {target_type} ({target_name})"
+                            + (f" when {conditions}" if conditions else "")
+                        )
                 
                 if rules_text:
                     crm_tools_instructions.append(
                         f"Transfer to Human Tool: Available. Use this tool when the user requests human assistance or when escalation is needed. "
                         f"Transfer rules configured: {'; '.join(rules_text)}. "
-                        f"The tool will automatically use the configured transfer rules, so you don't need to specify assignee_id or team_id unless overriding the rules."
+                        f"The tool resolves the configured destination. Never provide assignee_id or team_id; select a route_key only when multiple routes are configured."
                     )
             else:
                 crm_tools_instructions.append(
