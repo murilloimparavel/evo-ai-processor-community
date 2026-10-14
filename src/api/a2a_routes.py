@@ -1190,7 +1190,18 @@ async def handle_message_send(
             user_id=user_id,  # Pass contact_id as user_id
         )
 
-        final_response = result.get("final_response", "No response")
+        final_response = result.get("final_response")
+        if not isinstance(final_response, str) or final_response.strip().lower() in {
+            "", "no response", "no response captured.", "no content to process"
+        } or (isinstance(final_response, str) and final_response.strip().lower().startswith("agent escalated:")):
+            logger.error("Agent returned an unsendable response before A2A completion")
+            final_response = (
+                "Seu atendimento já foi encaminhado para nossa equipe. "
+                "Em breve, uma pessoa continuará a conversa por aqui."
+                if result.get("terminal_handoff") is True else
+                "Desculpe, não consegui concluir minha resposta agora. "
+                "Pode me enviar sua mensagem novamente?"
+            )
         logger.info(f"✅ Agent response generated ({len(final_response)} chars)")
 
         # Log what we're about to send to create_task_response

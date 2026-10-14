@@ -44,9 +44,80 @@ from src.evo_extension_points import (
     runtime_context,
     usage_reporter,
 )
+import asyncio
+import json
 import uuid
 
 logger = setup_logger(__name__)
+
+_INVALID_REPLIES = {"no response captured.", "no response", "no content to process"}
+
+
+def _sendable_text(value: Any) -> bool:
+    return (
+        isinstance(value, str) and bool(value.strip())
+        and value.strip().lower() not in _INVALID_REPLIES
+        and not value.strip().lower().startswith("agent escalated:")
+    )
+
+
+def _agent_event_text(event: Any) -> str:
+    """Collect only visible text from an agent event, never tool payloads."""
+    content = getattr(event, "content", None)
+    if not content or getattr(content, "role", None) != "model":
+        return ""
+    parts = getattr(content, "parts", None) or []
+    return "\n".join(
+        part.text.strip() for part in parts
+        if getattr(part, "text", None) and not getattr(part, "thought", False)
+        and not getattr(part, "function_call", None)
+        and not getattr(part, "function_response", None)
+    ).strip()
+
+
+async def _recover_agent_reply(model: Any, customer_text: str, history: list, terminal_handoff: bool) -> str:
+    """One isolated, tool-free model turn; never touches the customer session."""
+    from google.adk.agents.llm_agent import LlmAgent
+    from google.adk.runners import InMemoryRunner
+    from google.genai.types import Content, Part
+
+    tool_results = []
+    for event in history:
+        for part in (event.get("content") or {}).get("parts", []):
+            response = part.get("function_response") if isinstance(part, dict) else None
+            if isinstance(response, dict):
+                tool_results.append(response)
+    recovery_agent = LlmAgent(
+        name="reply_recovery",
+        model=model,
+        instruction=(
+            "Escreva somente uma mensagem curta, em português, para o cliente. "
+            "Use apenas os fatos explícitos abaixo. Não afirme disponibilidade, preço, "
+            "reserva ou ação que não esteja confirmada nos resultados. Não execute ações. "
+            "Se não houver informação suficiente, peça esclarecimento. "
+            + ("O atendimento humano foi confirmado; avise que a equipe continuará aqui. " if terminal_handoff else "")
+        ),
+        tools=[],
+    )
+    runner = InMemoryRunner(agent=recovery_agent, app_name="reply_recovery")
+    session = await runner.session_service.create_session(app_name="reply_recovery", user_id="recovery")
+    prompt = json.dumps({
+        "mensagem_cliente": customer_text[:2000],
+        "resultados_ferramentas": tool_results[-5:],
+    }, ensure_ascii=False, default=str)[:8000]
+
+    async def collect() -> str:
+        response = ""
+        async for event in runner.run_async(
+            user_id="recovery", session_id=session.id,
+            new_message=Content(role="user", parts=[Part(text=prompt)]),
+        ):
+            candidate = _agent_event_text(event)
+            if event.is_final_response() and _sendable_text(candidate):
+                response = candidate
+        return response
+
+    return await asyncio.wait_for(collect(), timeout=12)
 
 
 def _event_has_successful_terminal_handoff(event_dict: Dict[str, Any]) -> bool:
@@ -406,7 +477,7 @@ class StandardRunner:
                 }
 
             # Run agent and collect response
-            final_response_text = "No response captured."
+            final_response_text = ""
             message_history = []
             terminal_handoff = False
 
@@ -494,21 +565,41 @@ class StandardRunner:
                             except Exception as e:
                                 logger.debug(f"Could not save event to memory: {e}")
 
-                    if (
-                        event.content
-                        and event.content.parts
-                        and event.content.parts[0].text
-                    ):
-                        final_response_text = event.content.parts[0].text
+                    event_text = _agent_event_text(event)
+                    if _sendable_text(event_text):
+                        if event.is_final_response():
+                            final_response_text = event_text
 
                     if event.actions and event.actions.escalate:
-                        final_response_text = f"Agent escalated: {event.error_message or 'No specific message.'}"
+                        logger.warning("Agent escalated without a customer-facing final response")
+                        final_response_text = ""
                         break
 
                 logger.info(
                     f"Session tokens: {total_tokens} (prompt={total_prompt_tokens},"
                     f" candidates={total_candidate_tokens})"
                 )
+
+                if not _sendable_text(final_response_text):
+                    if hasattr(root_agent, "model"):
+                        try:
+                            final_response_text = await _recover_agent_reply(
+                                root_agent.model,
+                                "\n".join([message, *transcribed_texts]),
+                                message_history,
+                                terminal_handoff,
+                            )
+                        except Exception:
+                            logger.exception("Single reply-recovery attempt failed")
+                if not _sendable_text(final_response_text):
+                    logger.warning("Agent ended without sendable text; using bounded recovery reply")
+                    final_response_text = (
+                        "Seu atendimento já foi encaminhado para nossa equipe. "
+                        "Em breve, uma pessoa continuará a conversa por aqui."
+                        if terminal_handoff else
+                        "Desculpe, não consegui concluir minha resposta agora. "
+                        "Pode me enviar sua mensagem novamente?"
+                    )
 
                 try:
                     if not hasattr(root_agent, "model"):
