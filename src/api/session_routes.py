@@ -1467,6 +1467,25 @@ async def create_session_event(
         )
     
     try:
+        # CRM retries can arrive after the processor accepted an event but its
+        # response was lost. A stable invocation_id makes that delivery idempotent.
+        if event_data.invocation_id and any(
+            getattr(existing_event, "invocation_id", None) == event_data.invocation_id
+            for existing_event in (session.events or [])
+        ):
+            logger.info(
+                "Session event already present; treating retry as success "
+                "(session_id=%s, invocation_id=%s)",
+                session_id,
+                event_data.invocation_id,
+            )
+            return SessionEventResponse(
+                status="success",
+                message="Event was already present in the session",
+                event_id=event_data.invocation_id,
+                session_id=session_id,
+            )
+
         # Create event timestamp if not provided
         event_timestamp = event_data.timestamp if event_data.timestamp else time.time()
         
