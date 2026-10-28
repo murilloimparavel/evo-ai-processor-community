@@ -1223,6 +1223,7 @@ class LlmAgentBuilder:
             root_agent, processed_agents, enabled_tools
         )
         if sub_agents:
-            root_llm_agent.sub_agents = sub_agents
+            from .agent_hierarchy import attach_sub_agents
+            attach_sub_agents(root_llm_agent, sub_agents)
 
         return root_llm_agent, state_params
