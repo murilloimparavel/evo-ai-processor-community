@@ -217,18 +217,9 @@ class StandardRunner:
                 session_service, session, message, state_params, metadata
             )
 
-            # Generation and delivery are distinct: cancelled turns remain in ADK history.
-            from src.utils.delivery_context import delivery_context_instruction
-            delivery_instruction = delivery_context_instruction(metadata, external_id)
-            if delivery_instruction is not None:
-                import time
-                from google.adk.events import Event
-                from google.genai.types import Content, Part
-                await session_service.append_event(session, Event(
-                    invocation_id=f"delivery_context_{time.time_ns()}", author="system",
-                    content=Content(role="system", parts=[Part(text=delivery_instruction)]),
-                    timestamp=time.time(),
-                ))
+            # Global instructions reach all subagents without persisting repeated snapshots.
+            from src.utils.delivery_context import delivery_context_instruction, apply_delivery_context
+            apply_delivery_context(root_agent, delivery_context_instruction(metadata, external_id))
 
             # Process files
             file_parts, transcribed_texts = await self.utils.process_files(

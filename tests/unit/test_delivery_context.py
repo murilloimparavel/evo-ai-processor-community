@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import asyncio
 
 spec = importlib.util.spec_from_file_location("delivery_context", Path(__file__).parents[2] / "src/utils/delivery_context.py")
 module = importlib.util.module_from_spec(spec)
@@ -29,6 +30,25 @@ class DeliveryContextTest(unittest.TestCase):
     def test_legacy_and_invalid_metadata_are_ignored(self):
         self.assertIsNone(module.delivery_context_instruction(None, "c1"))
         self.assertIsNone(module.delivery_context_instruction({"crm_delivery_context": "bad"}, "c1"))
+
+    def test_snapshot_replaces_previous_without_persisting_history(self):
+        class Agent:
+            global_instruction = 'Preserve the original instruction.'
+        agent = Agent()
+        module.apply_delivery_context(agent, 'snapshot-one')
+        module.apply_delivery_context(agent, 'snapshot-two')
+        instruction = asyncio.run(agent.global_instruction(None))
+        self.assertIn('Preserve the original instruction.', instruction)
+        self.assertIn('snapshot-two', instruction)
+        self.assertNotIn('snapshot-one', instruction)
+
+    def test_async_existing_instruction_is_preserved(self):
+        class Agent:
+            async def global_instruction(self, context):
+                return 'existing async instruction'
+        agent = Agent()
+        module.apply_delivery_context(agent, 'snapshot')
+        self.assertEqual(asyncio.run(agent.global_instruction(None)), 'existing async instruction\n\nsnapshot')
 
 if __name__ == "__main__":
     unittest.main()

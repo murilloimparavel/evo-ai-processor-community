@@ -23,3 +23,21 @@ def delivery_context_instruction(metadata, conversation_id):
         "and tool results; this is not a conversation reset. An empty list means no previous "
         "outbound message is confirmed in this snapshot.\n" + json.dumps(delivered, ensure_ascii=False)
     )
+
+
+def apply_delivery_context(agent, instruction):
+    """Keep the latest snapshot in per-request instructions, never in persisted history."""
+    if instruction is None or not hasattr(agent, 'global_instruction'):
+        return
+    previous = agent.global_instruction
+    previous = getattr(previous, '_crcn_delivery_base', previous)
+
+    async def scoped_instruction(context):
+        import inspect
+        value = previous(context) if callable(previous) else previous
+        if inspect.isawaitable(value):
+            value = await value
+        return (value or '') + '\n\n' + instruction
+
+    scoped_instruction._crcn_delivery_base = previous
+    agent.global_instruction = scoped_instruction
