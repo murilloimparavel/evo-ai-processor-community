@@ -37,6 +37,7 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools import load_artifacts
 from google.adk.tools.load_memory_tool import load_memory_tool
 from google.adk.agents.callback_context import CallbackContext
+from .crm_context_gate import restrict_unbound_crm_tools
 from google.adk.models.google_llm import Gemini
 from google.adk.planners import PlanReActPlanner
 from src.schemas.schemas import Agent
@@ -1140,6 +1141,7 @@ class LlmAgentBuilder:
             "description": agent.description,
             "tools": all_tools,
             "before_agent_callback": combined_callback,
+            "before_model_callback": restrict_unbound_crm_tools,
             # "after_model_callback": advanced_usage_tracker,
         }
 
@@ -1223,6 +1225,7 @@ class LlmAgentBuilder:
             root_agent, processed_agents, enabled_tools
         )
         if sub_agents:
-            root_llm_agent.sub_agents = sub_agents
+            from .agent_hierarchy import attach_sub_agents
+            attach_sub_agents(root_llm_agent, sub_agents)
 
         return root_llm_agent, state_params
