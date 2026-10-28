@@ -217,6 +217,10 @@ class StandardRunner:
                 session_service, session, message, state_params, metadata
             )
 
+            # Global instructions reach all subagents without persisting repeated snapshots.
+            from src.utils.delivery_context import delivery_context_instruction, apply_delivery_context
+            apply_delivery_context(root_agent, delivery_context_instruction(metadata, external_id))
+
             # Process files
             file_parts, transcribed_texts = await self.utils.process_files(
                 files, artifacts_service, agent_id, external_id, adk_session_id
