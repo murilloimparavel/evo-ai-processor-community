@@ -354,6 +354,7 @@ async def _add_to_pipeline(
     stage_id: Optional[str],
     custom_fields: Optional[Dict[str, Any]],
     pipeline_rules: List[Dict[str, Any]],
+    _allow_recovery: bool = True,
 ) -> Dict[str, Any]:
     """Add contact or conversation to a pipeline."""
 
@@ -415,6 +416,18 @@ async def _add_to_pipeline(
     except Exception as api_error:
         error_message = str(api_error)
 
+        # Creating a card can race the CRM's automatic initial journey.
+        # Reuse that active card, only for the exact configured target stage.
+        target_stage = request_body.get("pipeline_stage_id")
+        configured_stages = {s.get("stageId") for s in (pipeline_rule or {}).get("stages", [])}
+        if (_allow_recovery and conversation_id and target_stage in configured_stages
+                and "BUSINESS_RULE_VIOLATION" in error_message
+                and "already has an active journey in this pipeline" in error_message):
+            return await _move_to_stage(
+                client, pipeline_id, conversation_id, target_stage, None,
+                pipeline_rules, _allow_recovery=False,
+            )
+
         if "already in this pipeline" in error_message.lower():
             error_message = f"Contact is already in this pipeline. Use 'move_to_stage' to change stages."
         elif "404" in error_message or "not found" in error_message.lower():
@@ -438,6 +451,7 @@ async def _move_to_stage(
     notes: Optional[str],
     pipeline_rules: List[Dict[str, Any]],
     stage_name: Optional[str] = None,
+    _allow_recovery: bool = True,
 ) -> Dict[str, Any]:
     """Move a contact to a different pipeline stage."""
 
@@ -508,6 +522,18 @@ async def _move_to_stage(
 
     except Exception as api_error:
         error_message = str(api_error)
+
+        # A missing card is different from an invalid stage or unavailable CRM.
+        # Create once at the requested configured stage; never retry in a loop.
+        configured_stages = {s.get("stageId") for s in (pipeline_rule or {}).get("stages", [])}
+        missing_card = ("HTTP 404" in error_message
+                        and "Pipeline conversation " in error_message
+                        and "not found in pipeline" in error_message)
+        if _allow_recovery and missing_card and stage_id in configured_stages:
+            return await _add_to_pipeline(
+                client, pipeline_id, None, conversation_id, stage_id, None,
+                pipeline_rules, _allow_recovery=False,
+            )
 
         if "404" in error_message or "not found" in error_message.lower():
             error_message = f"Conversation not found in pipeline or stage not found. Make sure the contact is already in the pipeline (use 'add_to_pipeline' first)."
