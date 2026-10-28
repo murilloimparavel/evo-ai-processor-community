@@ -1,0 +1,26 @@
+name: Publish isolated knowledge image
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  publish:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.knowledge
+          push: true
+          tags: ghcr.io/murilloimparavel/crcn-knowledge-processor:sha-${{ github.event.pull_request.head.sha }}

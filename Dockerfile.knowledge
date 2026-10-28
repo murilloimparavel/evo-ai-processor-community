@@ -1,0 +1,7 @@
+FROM ghcr.io/murilloimparavel/evo-ai-processor-community@sha256:abab8067fc886b633bcc50521d5aa19c1e288c2e5e5f82fc6855945d5daf0ae2
+COPY src/services/adk/tool_builder.py /app/src/services/adk/tool_builder.py
+COPY src/services/adk/tools/evo_crm/search_crm_knowledge.py /app/src/services/adk/tools/evo_crm/search_crm_knowledge.py
+COPY src/services/adk/runners/standard_runner.py /app/src/services/adk/runners/standard_runner.py
+COPY src/utils/delivery_context.py /app/src/utils/delivery_context.py
+COPY src/services/adk/agents/llm_agent_builder.py /app/src/services/adk/agents/llm_agent_builder.py
+COPY src/services/adk/agents/agent_hierarchy.py /app/src/services/adk/agents/agent_hierarchy.py
