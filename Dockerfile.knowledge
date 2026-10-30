@@ -7,3 +7,6 @@ COPY src/services/adk/agents/llm_agent_builder.py /app/src/services/adk/agents/l
 COPY src/services/adk/agents/agent_hierarchy.py /app/src/services/adk/agents/agent_hierarchy.py
 COPY src/services/adk/agents/crm_context_gate.py /app/src/services/adk/agents/crm_context_gate.py
 COPY src/services/adk/tools/evo_crm/pipeline_manipulation.py /app/src/services/adk/tools/evo_crm/pipeline_manipulation.py
+
+ARG GIT_SHA
+RUN test -n "$GIT_SHA" && printf '%s\n' "$GIT_SHA" > /app/.git_sha
