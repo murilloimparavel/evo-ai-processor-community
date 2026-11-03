@@ -6,11 +6,71 @@ and create/manage tasks within the pipeline.
 """
 
 from typing import Optional, Dict, Any, List
+from uuid import UUID
 from google.adk.tools import FunctionTool, ToolContext
 from src.services.adk.tools.evo_crm.base import EvoCrmClient
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+
+async def _get_pipeline_criteria(client, pipeline_id, pipeline_rules):
+    """Read only approved criteria for a pipeline explicitly granted to this agent."""
+    if not _uuid_identity(pipeline_id) or not any(
+        isinstance(rule, dict) and _uuid_identity(rule.get('pipelineId')) == _uuid_identity(pipeline_id)
+        for rule in pipeline_rules
+    ):
+        return {'status': 'error', 'action': 'get_pipeline_criteria', 'message': 'pipeline_not_configured'}
+    try:
+        response = await client.get(f'/api/v1/pipelines/{pipeline_id}/classification_catalog/projection')
+        data = response.get('data') if isinstance(response, dict) else None
+        if not isinstance(data, dict) or _uuid_identity(data.get('pipeline_id')) != _uuid_identity(pipeline_id):
+            raise ValueError('projection_identity_mismatch')
+        if data.get('source') == 'legacy' and data.get('available') is False:
+            return {'status': 'success', 'action': 'get_pipeline_criteria', 'criteria_source': 'legacy', 'details': {'available': False}}
+        if data.get('source') != 'catalog_v1' or data.get('available') is not True:
+            raise ValueError('catalog_unavailable')
+        digest, version = data.get('catalog_hash'), data.get('catalog_version')
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+            raise ValueError('invalid_catalog_version')
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            raise ValueError('invalid_catalog_version')
+        purpose, stages = data.get('purpose'), data.get('stages')
+        if not isinstance(purpose, str) or len(purpose) > 1200 or not isinstance(stages, list) or len(stages) > 100:
+            raise ValueError('invalid_catalog')
+        clean_stages, seen = [], set()
+        text_bytes = len(purpose.encode('utf-8'))
+        for stage in stages:
+            if not isinstance(stage, dict) or not _uuid_identity(stage.get('id')) or stage['id'] in seen:
+                raise ValueError('invalid_catalog_stage')
+            seen.add(stage['id'])
+            profile = stage.get('classification_profile')
+            if not isinstance(profile, dict) or not isinstance(profile.get('classification_enabled'), bool):
+                raise ValueError('invalid_catalog_stage')
+            if not profile['classification_enabled']:
+                continue
+            definition = profile.get('definition')
+            if not isinstance(definition, str) or len(definition) > 1200:
+                raise ValueError('invalid_catalog_stage')
+            clean_profile = {'classification_enabled': profile['classification_enabled'], 'definition': definition}
+            for key in ('entry_criteria', 'stay_criteria', 'exit_criteria', 'incompatible_conditions', 'sufficient_examples', 'insufficient_examples'):
+                values = profile.get(key, [])
+                if not isinstance(values, list) or len(values) > 8 or any(not isinstance(v, str) or len(v) > 1200 for v in values):
+                    raise ValueError('invalid_catalog_stage')
+                clean_profile[key] = values
+            name = stage.get('name')
+            if not isinstance(name, str) or len(name) > 200:
+                raise ValueError('invalid_catalog_stage')
+            text_bytes += len(name.encode('utf-8')) + len(definition.encode('utf-8'))
+            text_bytes += sum(len(value.encode('utf-8')) for key in ('entry_criteria', 'stay_criteria', 'exit_criteria', 'incompatible_conditions', 'sufficient_examples', 'insufficient_examples') for value in clean_profile[key])
+            if text_bytes > 12 * 1024 or len(clean_stages) >= 20:
+                raise ValueError('catalog_context_too_large')
+            clean_stages.append({'id': stage['id'], 'name': name, 'classification_profile': clean_profile})
+        return {'status': 'success', 'action': 'get_pipeline_criteria', 'criteria_source': 'catalog_v1',
+                'details': {'pipeline_id': pipeline_id, 'catalog_hash': digest, 'catalog_version': version,
+                            'purpose': purpose, 'stages': clean_stages, 'recommendation_is_financial_proof': False}}
+    except Exception:
+        return {'status': 'error', 'action': 'get_pipeline_criteria', 'message': 'approved_pipeline_criteria_unavailable'}
 
 
 def _extract_conversation_id_from_metadata(tool_context: Optional[ToolContext]) -> Optional[str]:
@@ -78,6 +138,205 @@ def _extract_pipeline_rules_from_metadata(tool_context: Optional[ToolContext]) -
             return pipeline_rules if isinstance(pipeline_rules, list) else []
 
     return []
+
+
+def _uuid_identity(value: Any) -> Optional[str]:
+    """Accept an entire canonical UUID, normalizing only its letter case."""
+    if not isinstance(value, str) or len(value) != 36:
+        return None
+    try:
+        normalized = str(UUID(value))
+    except (ValueError, AttributeError):
+        return None
+    return normalized if value.lower() == normalized else None
+
+
+def _display_identity(value: Any) -> Optional[str]:
+    """Match the CRM's positive PostgreSQL integer display IDs without coercion."""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    text = str(value)
+    if not text or not text.isascii() or not text.isdecimal():
+        return None
+    digits = text.lstrip("0")
+    if not digits or len(digits) > 10 or int(digits) > 2147483647:
+        return None
+    return digits
+
+
+
+def _context_conversation_binding(tool_context: Optional[ToolContext]) -> Dict[str, Any]:
+    """Bind aliases from CRM metadata, preferring the proven conversation UUID."""
+    contextual = _extract_conversation_id_from_metadata(tool_context)
+    if contextual is None:
+        return {"id": None, "aliases": set(), "valid": True}
+    state = tool_context.state
+    data = state.get("evoai_crm_data", {})
+    data = data if isinstance(data, dict) else {}
+    conversation = data.get("conversation", {})
+    conversation = conversation if isinstance(conversation, dict) else {}
+    identifiers = [data.get("conversation_id"), conversation.get("id"),
+                   state.get("conversation_id"), state.get("conversationId")]
+    identifiers = [value for value in identifiers if value is not None]
+    uuids = {_uuid_identity(value) for value in identifiers if _uuid_identity(value)}
+    if len(uuids) > 1:
+        return {"valid": False}
+    canonical = next(iter(uuids), None)
+    aliases = {canonical} if canonical else set()
+    if canonical:
+        # Only a display number explicitly paired with this UUID is proof of an alias.
+        displays = []
+        if _uuid_identity(conversation.get("id")) == canonical and "display_id" in conversation:
+            displays.append(_display_identity(conversation["display_id"]))
+        if _uuid_identity(data.get("conversation_id")) == canonical and "conversation_display_id" in data:
+            displays.append(_display_identity(data["conversation_display_id"]))
+        if displays and (None in displays or len(set(displays)) != 1):
+            return {"valid": False}
+        aliases.update(displays)
+    else:
+        canonical = _display_identity(contextual)
+        aliases.add(canonical)
+    normalized = [_uuid_identity(value) or _display_identity(value) for value in identifiers]
+    valid = canonical is not None and all(value in aliases and value is not None for value in normalized)
+    return {"id": canonical, "aliases": aliases, "valid": valid}
+
+
+def _missing_pipeline_card(error: Exception) -> bool:
+    """Read the Rails reason through EvoCrmClient's HTTPError cause chain.
+
+    Legacy CRM versions omit details.reason and use the old specific message.
+    Generic 404s, stage/pipeline errors and auth failures never authorize creation.
+    """
+    response = getattr(error, "response", None)
+    if response is None:
+        response = getattr(getattr(error, "__cause__", None), "response", None)
+    if response is not None:
+        if getattr(response, "status_code", None) != 404:
+            return False
+        try:
+            body = response.json()
+        except (ValueError, TypeError):
+            return False
+        details = body.get("error", {}) if isinstance(body, dict) else {}
+        if not isinstance(details, dict) or details.get("code") != "RESOURCE_NOT_FOUND":
+            return False
+        reason = details.get("details", {})
+        if isinstance(reason, dict) and "reason" in reason:
+            return reason["reason"] == "pipeline_item_not_found"
+        message = details.get("message", "")
+        return (isinstance(message, str) and "Pipeline conversation " in message
+                and "not found in pipeline" in message)
+    # Compatibility with legacy client errors that carry only the old message.
+    message = str(error)
+    return ("HTTP 404" in message and "Pipeline conversation " in message
+            and "not found in pipeline" in message)
+
+
+def _pipeline_identity_error(action: str, reason: str) -> Dict[str, Any]:
+    # Never expose the mismatched card, entity details, or raw CRM response.
+    logger.warning("Pipeline response identity validation failed: %s", reason)
+    return {
+        "status": "error",
+        "action": action,
+        "error": "PIPELINE_IDENTITY_MISMATCH",
+        "reason": reason,
+        "message": "CRM response did not confirm the requested pipeline target. Stop and verify the operation before retrying.",
+    }
+
+
+def _validate_pipeline_response(
+    response: Any,
+    action: str,
+    pipeline_id: str,
+    stage_id: Optional[str],
+    conversation_id: Optional[str],
+    contact_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Validate the Rails create serializer / move push_event_data contracts.
+
+    This detects a bad acknowledgement after a write; it cannot undo the write.
+    The CRM resolver is responsible for preventing mutation of the wrong card.
+    Conversation.uuid is a separate survey token, never an alias for its ID.
+    """
+    def fail(reason: str) -> Dict[str, Any]:
+        return _pipeline_identity_error(action, reason)
+
+    if not isinstance(response, dict) or response.get("success") is not True:
+        return fail("invalid_success_response")
+    item = response.get("data")
+    if action == "move_to_stage" and isinstance(item, dict):
+        item = item.get("pipeline_item")
+    if not isinstance(item, dict) or not _uuid_identity(item.get("id")):
+        return fail("missing_pipeline_item")
+    expected_pipeline = _uuid_identity(pipeline_id)
+    if not expected_pipeline or _uuid_identity(item.get("pipeline_id")) != expected_pipeline:
+        return fail("pipeline_mismatch")
+
+    stage_ids = [item[key] for key in ("pipeline_stage_id", "stage_id") if key in item]
+    if "pipeline_stage" in item:
+        stage = item["pipeline_stage"]
+        if not isinstance(stage, dict):
+            return fail("stage_mismatch")
+        stage_ids.append(stage.get("id"))
+        if "pipeline_id" in stage and _uuid_identity(stage["pipeline_id"]) != expected_pipeline:
+            return fail("pipeline_mismatch")
+    normalized_stages = [_uuid_identity(value) for value in stage_ids]
+    if (not normalized_stages or None in normalized_stages
+            or len(set(normalized_stages)) != 1):
+        return fail("stage_mismatch")
+    if stage_id is not None and normalized_stages[0] != _uuid_identity(stage_id):
+        return fail("stage_mismatch")
+
+    if conversation_id:
+        returned_id = _uuid_identity(item.get("conversation_id"))
+        if not returned_id:
+            return fail("conversation_mismatch")
+        conversation = item.get("conversation", {})
+        if not isinstance(conversation, dict):
+            return fail("conversation_mismatch")
+        if "id" in conversation and _uuid_identity(conversation["id"]) != returned_id:
+            return fail("conversation_mismatch")
+        expected_uuid = _uuid_identity(conversation_id)
+        expected_display = _display_identity(conversation_id)
+        if expected_uuid:
+            if returned_id != expected_uuid:
+                return fail("conversation_mismatch")
+        elif not expected_display:
+            return fail("conversation_mismatch")
+        display_ids = []
+        if "conversation_display_id" in item:
+            display_ids.append(item["conversation_display_id"])
+        if "display_id" in conversation:
+            display_ids.append(conversation["display_id"])
+        normalized_displays = [_display_identity(value) for value in display_ids]
+        if display_ids and (None in normalized_displays
+                            or len(set(normalized_displays)) != 1):
+            return fail("conversation_mismatch")
+        if expected_display and (not normalized_displays
+                                 or normalized_displays[0] != expected_display):
+            return fail("conversation_mismatch")
+        if (item.get("type", "conversation") != "conversation"
+                or item.get("is_lead", False) is not False
+                or item.get("contact_id") is not None):
+            return fail("conversation_mismatch")
+        if "item_id" in item and _uuid_identity(item["item_id"]) != returned_id:
+            return fail("conversation_mismatch")
+    else:
+        expected_contact = _uuid_identity(contact_id)
+        if not expected_contact or _uuid_identity(item.get("contact_id")) != expected_contact:
+            return fail("contact_mismatch")
+        if (item.get("conversation_id") is not None
+                or item.get("type", "contact") != "contact"):
+            return fail("contact_mismatch")
+        if item.get("is_lead", True) is not True:
+            return fail("contact_mismatch")
+        contact = item.get("contact", {})
+        if not isinstance(contact, dict) or (
+                "id" in contact and _uuid_identity(contact["id"]) != expected_contact):
+            return fail("contact_mismatch")
+        if "item_id" in item and _uuid_identity(item["item_id"]) != expected_contact:
+            return fail("contact_mismatch")
+    return None
 
 
 def create_pipeline_manipulation_tool(
@@ -176,11 +435,15 @@ def create_pipeline_manipulation_tool(
                 if effective_contact_id:
                     logger.info(f"Extracted contact_id from metadata: {effective_contact_id}")
 
-            effective_conversation_id = conversation_id
-            if not effective_conversation_id and tool_context:
-                effective_conversation_id = _extract_conversation_id_from_metadata(tool_context)
-                if effective_conversation_id:
-                    logger.info(f"Extracted conversation_id from metadata: {effective_conversation_id}")
+            binding = _context_conversation_binding(tool_context)
+            if not binding["valid"]:
+                return _pipeline_identity_error(action, "context_conversation_mismatch")
+            if conversation_id and binding["id"]:
+                requested = (_uuid_identity(conversation_id)
+                             or _display_identity(conversation_id))
+                if requested is None or requested not in binding["aliases"]:
+                    return _pipeline_identity_error(action, "context_conversation_mismatch")
+            effective_conversation_id = binding["id"] or conversation_id
 
             # Get pipeline_rules from tool context if not provided during tool creation
             available_pipeline_rules = default_pipeline_rules
@@ -208,7 +471,10 @@ def create_pipeline_manipulation_tool(
                 }
 
             # Execute the requested action
-            if action == 'add_to_pipeline':
+            if action == 'get_pipeline_criteria':
+                return await _get_pipeline_criteria(client, effective_pipeline_id, available_pipeline_rules)
+
+            elif action == 'add_to_pipeline':
                 return await _add_to_pipeline(
                     client=client,
                     pipeline_id=effective_pipeline_id,
@@ -265,7 +531,7 @@ def create_pipeline_manipulation_tool(
             else:
                 return {
                     "status": "error",
-                    "message": f"Invalid action '{action}'. Supported actions: add_to_pipeline, move_to_stage, create_task, update_task, complete_task",
+                    "message": f"Invalid action '{action}'. Supported actions: get_pipeline_criteria, add_to_pipeline, move_to_stage, create_task, update_task, complete_task",
                     "action": action,
                 }
 
@@ -298,7 +564,7 @@ def create_pipeline_manipulation_tool(
             if allow_services:
                 pipeline_rules_doc += " (Services enabled)"
             if general_instructions:
-                pipeline_rules_doc += f"\n     Instructions: {general_instructions}"
+                pipeline_rules_doc += f"\n     Legacy hints (use only when get_pipeline_criteria explicitly returns criteria_source=legacy): {general_instructions}"
 
             stages = rule.get("stages", [])
             if stages:
@@ -308,7 +574,7 @@ def create_pipeline_manipulation_tool(
                     stage_instructions = stage.get("instructions", "")
                     pipeline_rules_doc += f"       - {stage_name}"
                     if stage_instructions:
-                        pipeline_rules_doc += f": {stage_instructions}"
+                        pipeline_rules_doc += f": legacy hint: {stage_instructions}"
                     pipeline_rules_doc += "\n"
             pipeline_rules_doc += "\n"
 
@@ -318,11 +584,17 @@ def create_pipeline_manipulation_tool(
     and create/manage tasks for pipeline items.
 
     Actions:
+    - get_pipeline_criteria: Read approved purpose and criteria; call before choosing a stage.
     - add_to_pipeline: Add contact/conversation to a pipeline
     - move_to_stage: Move to a different pipeline stage
     - create_task: Create a new task for a pipeline item
     - update_task: Update an existing task
     - complete_task: Mark a task as completed{pipeline_rules_doc}
+
+    The approved catalog is the sole semantic source when criteria_source=catalog_v1;
+    ignore legacy instructions in that case. A dirty/unavailable catalog is an error,
+    never permission to fall back. Pipeline rules continue to restrict access/actions.
+    Criteria and recommendations never prove payment, reservation, delivery or completion.
 
     Args:
         action: The action to perform
@@ -354,6 +626,7 @@ async def _add_to_pipeline(
     stage_id: Optional[str],
     custom_fields: Optional[Dict[str, Any]],
     pipeline_rules: List[Dict[str, Any]],
+    _allow_recovery: bool = True,
 ) -> Dict[str, Any]:
     """Add contact or conversation to a pipeline."""
 
@@ -400,6 +673,13 @@ async def _add_to_pipeline(
             json_data=request_body,
         )
 
+        identity_error = _validate_pipeline_response(
+            response, "add_to_pipeline", pipeline_id,
+            request_body.get("pipeline_stage_id"), conversation_id, contact_id,
+        )
+        if identity_error:
+            return identity_error
+
         logger.info(f"Successfully added to pipeline {pipeline_id}")
 
         pipeline_name = pipeline_rule.get("pipelineName", pipeline_id) if pipeline_rule else pipeline_id
@@ -415,18 +695,26 @@ async def _add_to_pipeline(
     except Exception as api_error:
         error_message = str(api_error)
 
-        if "already in this pipeline" in error_message.lower():
-            error_message = f"Contact is already in this pipeline. Use 'move_to_stage' to change stages."
-        elif "404" in error_message or "not found" in error_message.lower():
-            error_message = f"Pipeline or contact not found. Please verify the IDs."
+        # Creating a card can race the CRM's automatic initial journey.
+        # Reuse that active card, only for the exact configured target stage.
+        target_stage = request_body.get("pipeline_stage_id")
+        configured_stages = {s.get("stageId") for s in (pipeline_rule or {}).get("stages", [])}
+        if (_allow_recovery and conversation_id and target_stage
+                and target_stage in configured_stages
+                and ("HTTP 400" in error_message or "HTTP 409" in error_message)
+                and "BUSINESS_RULE_VIOLATION" in error_message
+                and "already has an active journey in this pipeline" in error_message):
+            return await _move_to_stage(
+                client, pipeline_id, conversation_id, target_stage, None,
+                pipeline_rules, _allow_recovery=False,
+            )
 
-        logger.error(f"Failed to add to pipeline: {error_message}")
-
+        logger.error("Failed to add to pipeline")
         return {
             "status": "error",
-            "message": error_message,
+            "message": "CRM could not add the requested pipeline item.",
             "action": "add_to_pipeline",
-            "error": str(api_error),
+            "error": "PIPELINE_API_ERROR",
         }
 
 
@@ -438,6 +726,7 @@ async def _move_to_stage(
     notes: Optional[str],
     pipeline_rules: List[Dict[str, Any]],
     stage_name: Optional[str] = None,
+    _allow_recovery: bool = True,
 ) -> Dict[str, Any]:
     """Move a contact to a different pipeline stage."""
 
@@ -494,6 +783,12 @@ async def _move_to_stage(
             json_data=request_body,
         )
 
+        identity_error = _validate_pipeline_response(
+            response, "move_to_stage", pipeline_id, stage_id, conversation_id,
+        )
+        if identity_error:
+            return identity_error
+
         logger.info(f"Successfully moved to stage {stage_id}")
 
         return {
@@ -507,18 +802,22 @@ async def _move_to_stage(
         }
 
     except Exception as api_error:
-        error_message = str(api_error)
+        # A missing card is different from an invalid stage or unavailable CRM.
+        # Create once at the requested configured stage; never retry in a loop.
+        configured_stages = {s.get("stageId") for s in (pipeline_rule or {}).get("stages", [])}
+        missing_card = _missing_pipeline_card(api_error)
+        if _allow_recovery and missing_card and stage_id in configured_stages:
+            return await _add_to_pipeline(
+                client, pipeline_id, None, conversation_id, stage_id, None,
+                pipeline_rules, _allow_recovery=False,
+            )
 
-        if "404" in error_message or "not found" in error_message.lower():
-            error_message = f"Conversation not found in pipeline or stage not found. Make sure the contact is already in the pipeline (use 'add_to_pipeline' first)."
-
-        logger.error(f"Failed to move to stage: {error_message}")
-
+        logger.error("Failed to move to stage")
         return {
             "status": "error",
-            "message": error_message,
+            "message": "CRM could not move the requested pipeline item.",
             "action": "move_to_stage",
-            "error": str(api_error),
+            "error": "PIPELINE_API_ERROR",
         }
 
 

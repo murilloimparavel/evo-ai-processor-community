@@ -1,0 +1,54 @@
+name: Validate protected knowledge runtime
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protected-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      KNOWLEDGE_REPLAY_TEST_REDIS_URL: redis://127.0.0.1:6379/15
+      PYTHONDONTWRITEBYTECODE: '1'
+      POSTGRES_CONNECTION_STRING: postgresql://postgres:test-only@127.0.0.1:5432/knowledge_unit_only
+      EVO_AI_CRM_URL: http://127.0.0.1:3000
+      EVO_AUTH_BASE_URL: http://127.0.0.1:3001
+      EVO_CORE_BASE_URL: http://127.0.0.1:9001
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install runtime dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile packaged source
+        run: python -m compileall -q src
+      - name: Verify runtime contracts without external providers
+        run: |
+          set -eu
+          ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+          export ENCRYPTION_KEY
+          for pattern in test_isolat\*.py test_knowledge_runtime_grant.py test_knowledge_runtime_replay.py test_knowledge_delegation.py test_knowledge_pilot_scope.py test_response_provenance.py test_secure_custom\*.py; do
+            python -m unittest discover -s tests/unit -p "$pattern" -v
+          done

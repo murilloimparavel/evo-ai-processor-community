@@ -79,6 +79,11 @@ class LiveRunner:
         """Start a live agent session and return live events and request queue."""
 
         try:
+            # Live mode has no isolated dispatch adapter. Never fall back to
+            # its shared session while isolation is required.
+            from src.services.adk.runners.isolation_gate import isolation_required
+            if isolation_required(str(agent_id)):
+                raise PermissionError("isolated live dispatch unavailable")
             logger.info(
                 f"🚀 Starting live session for agent {agent_id}, user {external_id}, is_audio={is_audio}"
             )

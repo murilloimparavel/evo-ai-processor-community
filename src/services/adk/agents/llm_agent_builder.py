@@ -37,6 +37,7 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools import load_artifacts
 from google.adk.tools.load_memory_tool import load_memory_tool
 from google.adk.agents.callback_context import CallbackContext
+from .crm_context_gate import restrict_unbound_crm_tools
 from google.adk.models.google_llm import Gemini
 from google.adk.planners import PlanReActPlanner
 from src.schemas.schemas import Agent
@@ -58,6 +59,38 @@ from .agent_utils import (
 )
 
 logger = setup_logger(__name__)
+
+
+def _pipeline_criteria_instructions(pipeline_rules):
+    """2026-10-29: approved CRM catalog owns semantics; agent rules own access."""
+    prefix = (
+        "Pipeline Manipulation Tool: Available. The conversation_id is extracted from trusted context. "
+        "Before choosing or changing a stage, call action=get_pipeline_criteria for the configured pipeline. "
+        "When criteria_source=catalog_v1, approved CRM purpose and stage criteria are authoritative; "
+        "ignore legacy semantic hints in agent configuration. If the catalog is unavailable, dirty or the read fails, "
+        "do not move and do not fall back. Criteria are not proof of payment, reservation, delivery or completion. "
+    )
+    if not isinstance(pipeline_rules, list) or not pipeline_rules or len(pipeline_rules) > 20:
+        return prefix + "No bounded configured pipeline access list is available; do not invent a destination."
+    access, hints = [], []
+    for rule in pipeline_rules:
+        if not isinstance(rule, dict):
+            continue
+        identifier = rule.get('pipelineId') or rule.get('pipeline_id')
+        if not isinstance(identifier, str) or len(identifier) > 64:
+            continue
+        access.append(identifier)
+        hint = rule.get('instructions') or rule.get('description')
+        if isinstance(hint, str) and hint:
+            hints.append(f"- {identifier}: {hint}")
+    text = prefix + "Configured pipeline access IDs: " + ', '.join(access) + ". "
+    if hints:
+        legacy = '\n'.join(hints)
+        if len(legacy.encode('utf-8')) <= 4000:
+            text += "Legacy hints, usable ONLY after the CRM explicitly returns criteria_source=legacy:\n" + legacy
+        else:
+            text += "Legacy hints exceed the safe context limit; do not move using incomplete or inferred rules."
+    return text
 
 
 class GeminiWithApiKey(Gemini):
@@ -761,30 +794,7 @@ class LlmAgentBuilder:
 
         if allow_pipeline_manipulation:
             pipeline_rules = agent.config.get("pipeline_rules", [])
-            if isinstance(pipeline_rules, list) and pipeline_rules:
-                rules_text = []
-                for rule in pipeline_rules:
-                    pipeline_name = rule.get("pipelineName") or rule.get("pipeline_name") or rule.get("pipelineId") or rule.get("pipeline_id") or "unknown pipeline"
-                    stage_name = rule.get("stageName") or rule.get("stage_name") or rule.get("stageId") or rule.get("stage_id")
-                    instructions = rule.get("instructions") or rule.get("description") or ""
-                    descriptor = f"{pipeline_name}"
-                    if stage_name:
-                        descriptor += f" → {stage_name}"
-                    if instructions:
-                        descriptor += f": {instructions}"
-                    rules_text.append(f"- {descriptor}")
-
-                crm_tools_instructions.append(
-                    "Pipeline Manipulation Tool: Available. Use this tool to assign the current conversation to a pipeline or move it between stages. "
-                    "The conversation_id will be automatically extracted from the context. "
-                    f"Configured pipeline rules:\n{chr(10).join(rules_text)}\n"
-                    "Apply a rule only when its instructions clearly match the current situation. Do not move conversations between stages without a matching rule."
-                )
-            else:
-                crm_tools_instructions.append(
-                    "Pipeline Manipulation Tool: Available. Use this tool to assign the current conversation to a pipeline or move it between stages when the conversation reaches a state that warrants it (e.g., qualified lead, sale closed, follow-up needed). "
-                    "The conversation_id is auto-extracted from the context; you must provide the target pipeline_id and stage_id (or the stage you want to move to)."
-                )
+            crm_tools_instructions.append(_pipeline_criteria_instructions(pipeline_rules))
 
         if allow_manage_labels:
             crm_tools_instructions.append(
@@ -1140,6 +1150,7 @@ class LlmAgentBuilder:
             "description": agent.description,
             "tools": all_tools,
             "before_agent_callback": combined_callback,
+            "before_model_callback": restrict_unbound_crm_tools,
             # "after_model_callback": advanced_usage_tracker,
         }
 
@@ -1223,6 +1234,7 @@ class LlmAgentBuilder:
             root_agent, processed_agents, enabled_tools
         )
         if sub_agents:
-            root_llm_agent.sub_agents = sub_agents
+            from .agent_hierarchy import attach_sub_agents
+            attach_sub_agents(root_llm_agent, sub_agents)
 
         return root_llm_agent, state_params

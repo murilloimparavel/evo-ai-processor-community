@@ -50,9 +50,10 @@ async def run_agent(
     files: Optional[list] = None,
     metadata: Optional[Dict[str, Any]] = None,
     user_id: Optional[str] = None,
+    isolation_authority=None,
 ) -> Dict[str, Any]:
     """Execute a non-streaming agent request."""
-    runner = StandardRunner(db)
+    runner = StandardRunner(db, isolation_authority=isolation_authority)
     return await runner.run_agent(
         agent_id=agent_id,
         external_id=external_id,
