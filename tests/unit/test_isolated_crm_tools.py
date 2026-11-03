@@ -36,7 +36,7 @@ with patch.dict(sys.modules, {"src.models.models": fake_models, "src.services.ad
 class ScopedToolsTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.authority = authority_module.VerifiedIsolationAuthority.__new__(authority_module.VerifiedIsolationAuthority)
-        self.authority._grant = SimpleNamespace(conversation_id="trusted-conversation", contact_id="trusted-contact")
+        self.authority._grant = SimpleNamespace(conversation_id="trusted-conversation", contact_id="trusted-contact", event_id="trusted-event")
         self.root = LlmAgent(name="root")
         self.authority._current_config = AsyncMock()
         self.authority._mutation_request = AsyncMock(return_value={"status": "success"})
@@ -64,8 +64,12 @@ class ScopedToolsTest(unittest.IsolatedAsyncioTestCase):
                                                          self.authority._consume_custom_attempt)
         egress = AsyncMock(return_value={"status": "success"})
         with patch.object(authority_module, "execute", egress):
-            for number in range(6):
-                await wrapper.run_async(args={"code": str(number)}, tool_context=None)
+            with self.assertLogs("knowledge_runtime.audit", level="INFO") as audit:
+                for number in range(6):
+                    await wrapper.run_async(args={"code": str(number)}, tool_context=None)
+            self.assertEqual(len(audit.output), 6)
+            self.assertTrue(all("event_id=trusted-event" in line and "status=success" in line for line in audit.output))
+            self.assertTrue(all("code=" not in line and "service.example" not in line for line in audit.output))
             with self.assertRaises(PermissionError):
                 await wrapper.run_async(args={"code": "seventh"}, tool_context=None)
             self.assertEqual(egress.await_count, 6)
@@ -73,7 +77,9 @@ class ScopedToolsTest(unittest.IsolatedAsyncioTestCase):
             self.authority._custom_requests = set()
             egress.reset_mock()
             self.authority._custom_for.reset_mock()
-            await wrapper.run_async(args={"code": "same"}, tool_context=None)
+            with self.assertLogs("knowledge_runtime.audit", level="INFO") as audit:
+                await wrapper.run_async(args={"code": "same"}, tool_context=None)
+            self.assertNotIn("same", audit.output[0])
             with self.assertRaises(PermissionError):
                 await wrapper.run_async(args={"code": "same"}, tool_context=None)
             self.assertEqual(egress.await_count, 1)

@@ -7,6 +7,7 @@ import os
 import time
 import hashlib
 import json
+import logging
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -23,6 +24,16 @@ from types import SimpleNamespace
 
 
 from src.services.knowledge_runtime.response_provenance import ResponseProvenanceMixin
+
+
+# Deliberately narrow audit: no model arguments, URLs, headers or response data.
+# Keep it independent of verbose HTTP/model logging so the pilot can be verified
+# without exposing reservation details or credentials.
+audit_logger = logging.getLogger("knowledge_runtime.audit")
+if not audit_logger.handlers:
+    audit_logger.addHandler(logging.StreamHandler())
+audit_logger.setLevel(logging.INFO)
+audit_logger.propagate = False
 
 
 class VerifiedIsolationAuthority(ResponseProvenanceMixin):
@@ -166,13 +177,20 @@ class VerifiedIsolationAuthority(ResponseProvenanceMixin):
                 if config_dict(latest) != config_dict(record) or latest_policy != policy:
                     raise CustomDenied()
             try:
-                return await execute(current, current_policy, kwargs, self._grant, reauthorize)
+                result = await execute(current, current_policy, kwargs, self._grant, reauthorize)
+                self._audit_custom(policy, "success")
+                return result
             except CustomDenied:
+                self._audit_custom(policy, "denied")
                 return {"status": "error", "error": "Custom tool unavailable; no reservation or payment is confirmed."}
         custom_read.__name__ = tool_name
         custom_read.__doc__ = record.description or "Query an explicitly approved read-only external service."
         custom_read.__signature__ = signature(record, policy)
         return custom_read
+
+    def _audit_custom(self, policy, status):
+        audit_logger.info("knowledge_custom_read event_id=%s tool_id=%s purpose=%s status=%s",
+                          self._grant.event_id, policy["tool_id"], policy["purpose"], status)
 
     def _make_search(self, root_agent, name):
         async def search_crm_knowledge(query: str, limit: int = 5):
