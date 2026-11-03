@@ -137,9 +137,11 @@ def _event_has_successful_terminal_handoff(event_dict: Dict[str, Any]) -> bool:
 class StandardRunner:
     """Runner for non-streaming agent execution."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, isolation_authority=None):
         self.db = db
         self.utils = RunnerUtils(db)
+        # Trusted service dependency; it is never populated from request metadata.
+        self.isolation_authority = isolation_authority
 
     async def run_agent(
         self,
@@ -179,6 +181,17 @@ class StandardRunner:
                     "capability": capability,
                     "message_history": [],
                 }
+
+            # The scoped mode must never bypass the capability gate or fall
+            # back to the legacy shared session when authority is unavailable.
+            from src.services.adk.runners.isolation_gate import isolation_required, run_required_isolation
+            if isolation_required(str(agent_id)):
+                if is_inactivity_action:
+                    raise PermissionError("isolated inactivity dispatch unavailable")
+                return await run_required_isolation(
+                    authority=self.isolation_authority, utils=self.utils, agent_id=agent_id,
+                    external_id=external_id, files=files, timeout=timeout,
+                )
 
             # Extension point: runtime context resolution. Default returns
             # None; consumer overrides return an operational context id that

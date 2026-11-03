@@ -1,12 +1,15 @@
 FROM ghcr.io/murilloimparavel/evo-ai-processor-community@sha256:abab8067fc886b633bcc50521d5aa19c1e288c2e5e5f82fc6855945d5daf0ae2
-COPY src/services/adk/tool_builder.py /app/src/services/adk/tool_builder.py
-COPY src/services/adk/tools/evo_crm/search_crm_knowledge.py /app/src/services/adk/tools/evo_crm/search_crm_knowledge.py
-COPY src/services/adk/runners/standard_runner.py /app/src/services/adk/runners/standard_runner.py
-COPY src/utils/delivery_context.py /app/src/utils/delivery_context.py
-COPY src/services/adk/agents/llm_agent_builder.py /app/src/services/adk/agents/llm_agent_builder.py
-COPY src/services/adk/agents/agent_hierarchy.py /app/src/services/adk/agents/agent_hierarchy.py
-COPY src/services/adk/agents/crm_context_gate.py /app/src/services/adk/agents/crm_context_gate.py
-COPY src/services/adk/tools/evo_crm/pipeline_manipulation.py /app/src/services/adk/tools/evo_crm/pipeline_manipulation.py
+# This release changes the A2A transport, runners, scoped tools and provenance.
+# A selective overlay can silently leave those modules at the base-image version.
+COPY src/ /app/src/
+
+# Fail the build when the protected path is missing or not valid Python. The
+# source manifest can also be checked in the pulled image before activation.
+RUN test -f /app/src/services/knowledge_runtime/isolation_authority.py \
+    && test -f /app/src/services/knowledge_runtime/response_provenance.py \
+    && test -f /app/src/services/adk/runners/isolation_gate.py \
+    && python -m compileall -q /app/src \
+    && cd /app && find src -type f -name '*.py' -print0 | sort -z | xargs -0 sha256sum > /app/knowledge-source.sha256
 
 ARG GIT_SHA
 RUN test -n "$GIT_SHA" && printf '%s\n' "$GIT_SHA" > /app/.git_sha
