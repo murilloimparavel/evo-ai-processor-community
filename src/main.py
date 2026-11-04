@@ -46,6 +46,7 @@ from starlette.requests import Request as StarletteRequest
 from fastapi.exceptions import HTTPException
 from src.core.exceptions import BaseAPIException
 from src.core.exception_handlers import (
+    generic_exception_handler,
     http_exception_handler,
     base_api_exception_handler
 )
@@ -103,6 +104,7 @@ app = FastAPI(
 # Register exception handlers for standardized error responses
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(BaseAPIException, base_api_exception_handler)
+app.add_exception_handler(Exception, generic_exception_handler)
 
 
 class TenantContextMiddleware:
