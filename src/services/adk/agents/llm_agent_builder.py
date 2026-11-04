@@ -66,7 +66,8 @@ def _pipeline_criteria_instructions(pipeline_rules):
     prefix = (
         "Pipeline Manipulation Tool: Available. The conversation_id is extracted from trusted context. "
         "Before choosing or changing a stage, call action=get_pipeline_criteria for the configured pipeline. "
-        "When criteria_source=catalog_v1, approved CRM purpose and stage criteria are authoritative; "
+        "When criteria_source=catalog_v1, approved CRM purpose and all non-empty stage criteria are authoritative; "
+        "classification_enabled controls only the automatic classifier, not agent stage availability. "
         "ignore legacy semantic hints in agent configuration. If the catalog is unavailable, dirty or the read fails, "
         "do not move and do not fall back. Criteria are not proof of payment, reservation, delivery or completion. "
     )

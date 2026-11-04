@@ -73,12 +73,21 @@ class PipelineCatalogReadTest(IsolatedAsyncioTestCase):
         self.assertEqual(result['message'], 'approved_pipeline_criteria_unavailable')
         self.assertNotIn('synthetic-secret', str(result))
 
-    async def test_excludes_disabled_stage_profiles_and_fails_closed_on_oversized_context(self):
+    async def test_preserves_nonempty_agent_rules_for_disabled_classifier_stages(self):
         response = self.projection()
-        response['data']['stages'].append({'id': OTHER, 'name': 'Ignored', 'classification_profile': {'classification_enabled': False}})
+        response['data']['stages'].append({'id': OTHER, 'name': 'Agent-only terminal', 'classification_profile': {
+            'classification_enabled': False, 'definition': 'Support is explicitly confirmed resolved',
+            'entry_criteria': ['Resolution is confirmed in the current support request']}})
+        empty_stage = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+        response['data']['stages'].append({'id': empty_stage, 'name': 'No criteria', 'classification_profile': {
+            'classification_enabled': False, 'definition': '', 'entry_criteria': []}})
         client = NS(get=AsyncMock(return_value=response))
         result = await namespace['_get_pipeline_criteria'](client, PIPELINE, RULES)
-        self.assertEqual(len(result['details']['stages']), 1)
+        self.assertEqual(len(result['details']['stages']), 2)
+        self.assertFalse(result['details']['stages'][1]['classification_profile']['classification_enabled'])
+        self.assertEqual(result['details']['stages'][1]['classification_profile']['definition'],
+                         'Support is explicitly confirmed resolved')
+        self.assertNotIn(empty_stage, [stage['id'] for stage in result['details']['stages']])
         response['data']['stages'][0]['classification_profile'].update({key: ['x' * 1200] * 8 for key in ('entry_criteria', 'stay_criteria')})
         self.assertEqual((await namespace['_get_pipeline_criteria'](client, PIPELINE, RULES))['status'], 'error')
 

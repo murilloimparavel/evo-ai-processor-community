@@ -17,6 +17,7 @@ class PipelineCriteriaInstructionsTest(unittest.TestCase):
         self.assertIn('action=get_pipeline_criteria', value)
         self.assertIn('criteria_source=catalog_v1', value)
         self.assertIn('ignore legacy semantic hints', value)
+        self.assertIn('classification_enabled controls only the automatic classifier', value)
         self.assertIn('ONLY after the CRM explicitly returns criteria_source=legacy', value)
         self.assertIn('Old stage hint', value)
         self.assertIn('do not move and do not fall back', value)

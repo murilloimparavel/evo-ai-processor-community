@@ -47,8 +47,6 @@ async def _get_pipeline_criteria(client, pipeline_id, pipeline_rules):
             profile = stage.get('classification_profile')
             if not isinstance(profile, dict) or not isinstance(profile.get('classification_enabled'), bool):
                 raise ValueError('invalid_catalog_stage')
-            if not profile['classification_enabled']:
-                continue
             definition = profile.get('definition')
             if not isinstance(definition, str) or len(definition) > 1200:
                 raise ValueError('invalid_catalog_stage')
@@ -58,6 +56,14 @@ async def _get_pipeline_criteria(client, pipeline_id, pipeline_rules):
                 if not isinstance(values, list) or len(values) > 8 or any(not isinstance(v, str) or len(v) > 1200 for v in values):
                     raise ValueError('invalid_catalog_stage')
                 clean_profile[key] = values
+            # `classification_enabled` scopes the autonomous classifier only.
+            # Agents still need criteria for terminal/other stages deliberately
+            # excluded from automatic classification.
+            has_agent_criteria = bool(definition.strip()) or any(
+                clean_profile[key] for key in clean_profile if key != 'classification_enabled'
+            )
+            if not profile['classification_enabled'] and not has_agent_criteria:
+                continue
             name = stage.get('name')
             if not isinstance(name, str) or len(name) > 200:
                 raise ValueError('invalid_catalog_stage')
@@ -592,6 +598,7 @@ def create_pipeline_manipulation_tool(
     - complete_task: Mark a task as completed{pipeline_rules_doc}
 
     The approved catalog is the sole semantic source when criteria_source=catalog_v1;
+    classification_enabled controls only the automatic classifier, not agent stage availability.
     ignore legacy instructions in that case. A dirty/unavailable catalog is an error,
     never permission to fall back. Pipeline rules continue to restrict access/actions.
     Criteria and recommendations never prove payment, reservation, delivery or completion.
