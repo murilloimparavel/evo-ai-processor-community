@@ -112,3 +112,23 @@ async def base_api_exception_handler(request: Request, exc: BaseAPIException) ->
         status_code=exc.status_code
     )
 
+
+
+async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Return a stable 500 response without exposing exception internals in production."""
+    from src.config.settings import settings
+
+    details = None
+    if settings.DEBUG:
+        exception_type = type(exc)
+        name = exception_type.__qualname__
+        if exception_type.__module__ != "builtins":
+            name = exception_type.__module__ + "." + name
+        details = {"error_class": name}
+    return error_response(
+        request,
+        code=INTERNAL_ERROR,
+        message="An unexpected internal error occurred.",
+        details=details,
+        status_code=500,
+    )
