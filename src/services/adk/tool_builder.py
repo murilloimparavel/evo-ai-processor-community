@@ -45,6 +45,8 @@ from src.services.adk.custom_tools import (
 from src.services.adk.tools import exit_loop
 from src.services.adk.tools import create_text_to_speech_tool
 
+from src.services.adk.availability_budget import is_availability_http_tool, consume_availability_query
+
 logger = setup_logger(__name__)
 
 
@@ -67,7 +69,13 @@ class ToolBuilder:
         query_params = parameters.get("query_params") or {}
         body_params = parameters.get("body_params") or {}
 
+        availability = is_availability_http_tool(tool_config)
+
         def http_tool(**kwargs):
+            if availability:
+                denied = consume_availability_query()
+                if denied is not None:
+                    return json.dumps(denied, ensure_ascii=False)
             try:
                 # Combines default values with provided values
                 all_values = {**values, **normalize_http_tool_kwargs(http_tool, kwargs)}

@@ -41,6 +41,8 @@ import asyncio
 import json
 import uuid
 
+from src.services.adk.availability_budget import budgeted_stream
+
 logger = setup_logger(__name__)
 
 
@@ -84,6 +86,7 @@ class StreamingRunner:
 
         return event_dict
 
+    @budgeted_stream
     async def run_agent_stream(
         self,
         agent_id: str,

@@ -178,7 +178,7 @@ class VerifiedIsolationAuthority(ResponseProvenanceMixin):
                     raise CustomDenied()
             try:
                 result = await execute(current, current_policy, kwargs, self._grant, reauthorize)
-                self._audit_custom(policy, "success")
+                self._audit_custom(policy, "success" if result.get("status") == "success" else "denied")
                 return result
             except CustomDenied:
                 self._audit_custom(policy, "denied")

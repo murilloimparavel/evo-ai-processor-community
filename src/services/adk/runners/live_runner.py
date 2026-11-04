@@ -52,6 +52,8 @@ from src.services.adk.runners.runner_utils import RunnerUtils, convert_sets
 from src.utils.logger import setup_logger
 from src.core.exceptions import AgentNotFoundError
 
+from src.services.adk.availability_budget import budgeted_response, complete_live_availability_response
+
 logger = setup_logger(__name__)
 
 
@@ -168,6 +170,8 @@ class LiveRunner:
 
                     # If the turn complete or interrupted, send it
                     if event.turn_complete or event.interrupted:
+                        if event.turn_complete:
+                            complete_live_availability_response()
                         message = {
                             "turn_complete": event.turn_complete,
                             "interrupted": event.interrupted,
@@ -269,6 +273,7 @@ class LiveRunner:
             logger.error(f"🔥 Full traceback: {traceback.format_exc()}")
             raise
 
+    @budgeted_response
     async def run_live_session(
         self,
         websocket,

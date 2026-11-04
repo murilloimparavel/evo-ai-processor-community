@@ -52,3 +52,5 @@ jobs:
           for pattern in test_isolat\*.py test_knowledge_runtime_grant.py test_knowledge_runtime_replay.py test_knowledge_delegation.py test_knowledge_pilot_scope.py test_response_provenance.py test_secure_custom\*.py; do
             python -m unittest discover -s tests/unit -p "$pattern" -v
           done
+      - name: Verify request-scoped availability budgets and HTTP builders
+        run: python -m pytest -q tests/unit/test_availability_budget.py tests/unit/test_custom_tools.py tests/unit/test_transfer_handoff_contract.py

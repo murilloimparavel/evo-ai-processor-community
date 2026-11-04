@@ -48,6 +48,8 @@ import asyncio
 import json
 import uuid
 
+from src.services.adk.availability_budget import budgeted_response
+
 logger = setup_logger(__name__)
 
 _INVALID_REPLIES = {"no response captured.", "no response", "no content to process"}
@@ -143,6 +145,7 @@ class StandardRunner:
         # Trusted service dependency; it is never populated from request metadata.
         self.isolation_authority = isolation_authority
 
+    @budgeted_response
     async def run_agent(
         self,
         agent_id: str,

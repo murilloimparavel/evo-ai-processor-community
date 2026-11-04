@@ -21,6 +21,7 @@ from uuid import UUID
 
 import httpx
 from google.adk.tools import FunctionTool
+from src.services.adk.availability_budget import consume_availability_query
 
 FIELDS = ("name", "description", "method", "endpoint", "headers", "path_params", "query_params", "body_params", "values", "error_handling")
 PURPOSES = {"availability", "reservation_lookup", "payment_status", "date_now", "date_calculation", "property_lookup"}
@@ -253,6 +254,10 @@ def _redact(value, secrets):
 async def execute(record, policy, args, grant, reauthorize):
     """Execute one explicitly authorized read with fresh DB state and pinned TLS."""
     parts = validate_policy(record, policy)
+    if policy["purpose"] == "availability":
+        denied = consume_availability_query()
+        if denied is not None:
+            return denied
     path, query, body = request_data(record, policy, args, grant)
     address = await pinned_address(parts)
     await reauthorize()  # DNS lookup cannot extend a revoked capability/grant
