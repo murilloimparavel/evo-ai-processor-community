@@ -52,6 +52,8 @@ from src.services.adk.runners.runner_utils import RunnerUtils, convert_sets
 from src.utils.logger import setup_logger
 from src.core.exceptions import AgentNotFoundError
 
+from src.services.adk.availability_budget import budgeted_response, complete_live_availability_response
+
 logger = setup_logger(__name__)
 
 
@@ -79,6 +81,11 @@ class LiveRunner:
         """Start a live agent session and return live events and request queue."""
 
         try:
+            # Live mode has no isolated dispatch adapter. Never fall back to
+            # its shared session while isolation is required.
+            from src.services.adk.runners.isolation_gate import isolation_required
+            if isolation_required(str(agent_id)):
+                raise PermissionError("isolated live dispatch unavailable")
             logger.info(
                 f"🚀 Starting live session for agent {agent_id}, user {external_id}, is_audio={is_audio}"
             )
@@ -163,6 +170,8 @@ class LiveRunner:
 
                     # If the turn complete or interrupted, send it
                     if event.turn_complete or event.interrupted:
+                        if event.turn_complete:
+                            complete_live_availability_response()
                         message = {
                             "turn_complete": event.turn_complete,
                             "interrupted": event.interrupted,
@@ -264,6 +273,7 @@ class LiveRunner:
             logger.error(f"🔥 Full traceback: {traceback.format_exc()}")
             raise
 
+    @budgeted_response
     async def run_live_session(
         self,
         websocket,
