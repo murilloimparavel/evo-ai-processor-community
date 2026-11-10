@@ -216,6 +216,11 @@ class RunnerUtils:
         # Setup state parameters
         if state_params:
             for param in state_params:
+                # Template defaults are initialization, not a per-turn reset.
+                # Preserve facts/tools' outputs already persisted by earlier turns,
+                # including false/zero values and the current user_input above.
+                if param in session.state:
+                    continue
                 state_changes = {f"{param}": ""}
                 actions_with_update = EventActions(state_delta=state_changes)
                 new_param_event = Event(
