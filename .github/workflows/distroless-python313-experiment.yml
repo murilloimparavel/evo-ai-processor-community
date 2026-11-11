@@ -21,6 +21,20 @@ jobs:
   experiment:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: distroless_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d distroless_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -51,16 +65,48 @@ jobs:
           load: true
           tags: local/evo-ai-processor-distroless:python313-${{ github.sha }}
 
-      - name: Verify runtime imports and app smoke in final no-shell image
+      - name: Generate disposable smoke encryption key
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          import base64, secrets
+          print('SMOKE_ENCRYPTION_KEY=' + base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())
+          PY
+
+      - name: Verify normal entrypoint, HTTP startup and graceful stop
         shell: bash
         env:
           IMAGE: local/evo-ai-processor-distroless:python313-${{ github.sha }}
         run: |
           set -euo pipefail
-          python - <<'PY' >> "$GITHUB_ENV"
-          import base64, secrets
-          print('SMOKE_ENCRYPTION_KEY=' + base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())
-          PY
+          docker run -d --name distroless-app --network host \
+            -e ENCRYPTION_KEY="$SMOKE_ENCRYPTION_KEY" \
+            -e POSTGRES_CONNECTION_STRING=postgresql://postgres:test-only@127.0.0.1:5432/distroless_test \
+            -e PORT=18000 \
+            "$IMAGE"
+          ready=false
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18000/healthz; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" != true ]]; then
+            docker logs distroless-app
+            exit 1
+          fi
+          docker stop --time 20 distroless-app
+          exit_code="$(docker inspect --format '{{.State.ExitCode}}' distroless-app)"
+          [[ "$exit_code" == 0 ]]
+          docker rm distroless-app
+
+      - name: Verify runtime imports and isolated app smoke in final no-shell image
+        shell: bash
+        env:
+          IMAGE: local/evo-ai-processor-distroless:python313-${{ github.sha }}
+        run: |
+          set -euo pipefail
           docker run --rm --entrypoint /venv/bin/python "$IMAGE" -c \
             'import sys, shapely, pyarrow, pg8000; print(sys.version); print(shapely.geos_version_string, pyarrow.__version__, pg8000.__version__)'
           docker run --rm --entrypoint /venv/bin/python \

@@ -8,6 +8,13 @@ def main():
     commands = (
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         [sys.executable, "-m", "scripts.run_seeders"],
+    )
+    for command in commands:
+        subprocess.run(command, check=True)
+    # Replace PID 1 with Uvicorn so Docker/Kubernetes signals reach the server
+    # directly and graceful shutdown works without a shell/init wrapper.
+    os.execv(
+        sys.executable,
         [
             sys.executable,
             "-m",
@@ -19,8 +26,6 @@ def main():
             os.environ.get("PORT", "8000"),
         ],
     )
-    for command in commands:
-        subprocess.run(command, check=True)
 
 
 if __name__ == "__main__":

@@ -96,6 +96,61 @@ COPY --from=builder --chown=nonroot:nonroot /app/scripts/ ./scripts/
 COPY --from=builder --chown=nonroot:nonroot /app/migrations/ ./migrations/
 COPY --from=builder --chown=nonroot:nonroot /app/alembic.ini ./alembic.ini
 
+# Inspect ELF dependencies against the actual final runtime filesystem. The
+# ldd tool runs in a compatible Debian 13 stage, while library search is
+# restricted to files copied from distroless; resolving against builder-only
+# libraries fails the build.
+FROM python:3.13-slim-trixie AS inspect-runtime
+COPY --from=runtime / /distroless/
+RUN python - <<'PY'
+from pathlib import Path
+import os
+import re
+import subprocess
+
+site_packages = Path('/distroless/venv/lib/python3.13/site-packages')
+if not site_packages.is_dir():
+    raise SystemExit(f'Distroless venv site-packages missing: {site_packages}')
+extensions = [
+    path for path in site_packages.rglob('*')
+    if path.is_file() and re.search(r'\.so(?:\.\d+)*$', path.name)
+]
+if not extensions:
+    raise SystemExit('No native extension modules found in distroless venv')
+targets = [Path('/distroless/usr/bin/python'), *extensions]
+if not targets[0].exists():
+    raise SystemExit('Distroless Python executable is missing')
+runtime_library_dirs = [
+    '/distroless/lib/x86_64-linux-gnu',
+    '/distroless/usr/lib/x86_64-linux-gnu',
+    '/distroless/lib',
+    '/distroless/usr/lib',
+    str(site_packages),
+]
+shapely_libs = site_packages / 'shapely.libs'
+if shapely_libs.is_dir():
+    runtime_library_dirs.insert(0, str(shapely_libs))
+env = os.environ.copy()
+env['LD_LIBRARY_PATH'] = ':'.join(runtime_library_dirs)
+for target in targets:
+    result = subprocess.run(['ldd', str(target)], capture_output=True, text=True, env=env)
+    output = result.stdout + result.stderr
+    if result.returncode != 0 or 'not found' in output or 'not a dynamic executable' in output:
+        raise SystemExit(f'Unresolved libraries in distroless runtime for {target}:\n{output}')
+    for line in output.splitlines():
+        resolved = re.search(r'=>\s+(/[^\s]+)', line)
+        if resolved and not resolved.group(1).startswith('/distroless/'):
+            raise SystemExit(f'{target} resolves outside distroless rootfs: {line}')
+Path('/runtime-ldd-verified').write_text(
+    f'ldd checked {len(targets)} runtime objects against distroless rootfs\n'
+)
+print(Path('/runtime-ldd-verified').read_text(), end='')
+PY
+
+# Keep this as the default final stage and make it depend on the ldd gate.
+FROM runtime AS candidate
+COPY --from=inspect-runtime /runtime-ldd-verified /runtime-ldd-verified
+
 EXPOSE 8000
 ENTRYPOINT ["/venv/bin/python"]
 CMD ["/app/scripts/container_entrypoint.py"]
