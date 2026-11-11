@@ -110,7 +110,11 @@ def validate_policy(record, policy):
 def parameters(record, policy):
     specs = {}
     context = policy.get("context_params", {})
-    if (not isinstance(context, dict) or any(v not in {"conversation_id", "contact_id", "event_id"} for v in context.values())):
+    if (not isinstance(context, dict) or any(
+        not isinstance(key, str) or not key.isidentifier()
+        or not isinstance(value, str) or value not in {"conversation_id", "contact_id", "event_id"}
+        for key, value in context.items()
+    )):
         raise CustomDenied()
     raw_defaults = record.values or {}
     if not isinstance(raw_defaults, dict):
@@ -129,6 +133,13 @@ def parameters(record, policy):
             specs[key] = (location, definition, typed)
     if set(context) - set(specs) or set(defaults) - set(specs):
         raise CustomDenied()
+    # Context values are trusted grant fields, never literal/default tool config.
+    # Require an explicit string schema so request_data cannot ignore the grant
+    # value via the legacy untyped-parameter branch below.
+    for key in context:
+        _, definition, typed = specs[key]
+        if not typed or definition["type"] != "string":
+            raise CustomDenied()
     try:
         fields = [field for _, field, spec, conversion in Formatter().parse(urlsplit(record.endpoint).path) if field is not None]
     except ValueError:
@@ -176,6 +187,9 @@ def request_data(record, policy, args, grant):
     values = {key: value for key, value in (record.values or {}).items() if key not in {"__evo_modes_meta__", "__modes_meta__"}}
     values.update({mapping[key]: value for key, value in args.items()})
     for key, field in policy.get("context_params", {}).items():
+        _, definition, typed = specs.get(key, (None, None, False))
+        if not typed or definition["type"] != "string":
+            raise CustomDenied()
         values[key] = getattr(grant, field)
     data = {"path_params": {}, "query_params": {}, "body_params": {}}
     for key, (location, definition, typed) in specs.items():

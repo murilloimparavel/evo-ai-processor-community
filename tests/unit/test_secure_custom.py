@@ -91,6 +91,17 @@ class SecureCustomTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(args=args), self.assertRaises(secure.CustomDenied):
                 secure.request_data(self.tool, self.policy, args, self.grant)
 
+    def test_context_parameter_requires_typed_string_schema(self):
+        self.tool.body_params['conversation'] = {'required': True}
+        self.policy = policy(self.tool)
+        with self.assertRaises(secure.CustomDenied):
+            secure.validate_policy(self.tool, self.policy)
+
+        self.tool.body_params['conversation'] = {'type': 'integer', 'required': True}
+        self.policy = policy(self.tool)
+        with self.assertRaises(secure.CustomDenied):
+            secure.request_data(self.tool, self.policy, {'code': 'BOOK123'}, self.grant)
+
     async def test_adk_raw_arguments_are_validated_before_filtering(self):
         calls = []
         attempts = []
