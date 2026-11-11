@@ -1,0 +1,64 @@
+"""Vendored runtime evidence must fail closed without importing SDKs or a server."""
+import hashlib
+import importlib.util
+from pathlib import Path
+import tempfile
+import unittest
+
+path = Path(__file__).resolve().parents[2] / 'scripts/verify_candidate_runtime.py'
+spec = importlib.util.spec_from_file_location('candidate_evidence', path)
+verifier = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(verifier)
+
+
+class VendorEvidenceTest(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.vendor = Path(folder.name)
+        metadata = self.vendor / 'fixture-6.1.0.dist-info/METADATA'
+        metadata.parent.mkdir()
+        metadata.write_text('Name: fixture\nVersion: 6.1.0\n')
+        self.source = self.vendor / 'fixture/__init__.py'
+        self.source.parent.mkdir()
+        self.source.write_bytes(b'patched source\n')
+        self.expected = hashlib.sha256(b'__init__.py\0patched source\n\0').hexdigest()
+
+    def verify(self):
+        verifier.verify_vendor_package(self.vendor, 'fixture', '6.1.0',
+            'fixture-6.1.0.dist-info/METADATA', 'fixture', 1, self.expected)
+
+    def test_complete_patched_evidence_passes(self):
+        self.verify()
+
+    def test_empty_vendor_fails(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(RuntimeError, 'evidence failed'):
+                verifier.verify_setuptools_vendor(Path(folder))
+
+    def test_missing_metadata_fails(self):
+        (self.vendor / 'fixture-6.1.0.dist-info/METADATA').unlink()
+        with self.assertRaises(RuntimeError):
+            self.verify()
+
+    def test_old_or_duplicate_version_metadata_fails(self):
+        metadata = self.vendor / 'fixture-6.1.0.dist-info/METADATA'
+        for value in ('5.3.0', '6.1.0\nVersion: 5.3.0'):
+            metadata.write_text(f'Name: fixture\nVersion: {value}\n')
+            with self.assertRaises(RuntimeError):
+                self.verify()
+
+    def test_missing_source_fails(self):
+        self.source.unlink()
+        with self.assertRaises(RuntimeError):
+            self.verify()
+
+    def test_claimed_patched_version_with_old_source_fails(self):
+        self.source.write_bytes(b'old vulnerable source\n')
+        with self.assertRaises(RuntimeError):
+            self.verify()
+
+    def test_extra_old_source_fails(self):
+        (self.source.parent / 'old.py').write_text('old code')
+        with self.assertRaises(RuntimeError):
+            self.verify()

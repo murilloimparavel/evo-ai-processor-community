@@ -49,7 +49,7 @@ jobs:
           set -eu
           ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
           export ENCRYPTION_KEY
-          for pattern in test_isolat\*.py test_knowledge_runtime_grant.py test_knowledge_runtime_replay.py test_knowledge_delegation.py test_knowledge_pilot_scope.py test_response_provenance.py test_secure_custom\*.py; do
+          for pattern in test_isolat\*.py test_knowledge_runtime_grant.py test_knowledge_runtime_replay.py test_knowledge_delegation.py test_knowledge_pilot_scope.py test_response_provenance.py test_secure_custom\*.py test_candidate_runtime_evidence.py; do
             python -m unittest discover -s tests/unit -p "$pattern" -v
           done
       - name: Verify request-scoped availability budgets and HTTP builders
