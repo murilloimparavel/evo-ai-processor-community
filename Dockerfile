@@ -61,15 +61,16 @@ COPY --from=builder /app/alembic.ini ./alembic.ini
 # then import the app without connecting to its external services.
 RUN python - <<'PY'
 from pathlib import Path
+import re
 import subprocess
 
 root = Path('/usr/local/lib/python3.11/site-packages')
-for extension in root.rglob('*.so'):
+for extension in root.rglob('*'):
+    if not extension.is_file() or not re.search(r'\.so(?:\.\d+)*$', extension.name):
+        continue
     result = subprocess.run(['ldd', str(extension)], capture_output=True, text=True)
     output = result.stdout + result.stderr
-    if 'not a dynamic executable' in output:
-        continue
-    if result.returncode != 0 or 'not found' in output:
+    if result.returncode != 0 or 'not found' in output or 'not a dynamic executable' in output:
         raise SystemExit(f'Unresolved runtime libraries for {extension}:\n{output}')
 PY
 RUN python scripts/verify_candidate_runtime.py \
