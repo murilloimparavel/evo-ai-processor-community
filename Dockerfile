@@ -49,6 +49,7 @@ RUN apt-get update && apt-get upgrade -y \
 
 COPY --from=builder /usr/local/ /usr/local/
 COPY --from=builder /root/.local/bin/uv /usr/local/bin/uv
+COPY --from=builder /app/requirements.txt ./requirements.txt
 COPY --from=builder /app/src/ ./src/
 COPY --from=builder /app/README.md ./README.md
 COPY --from=builder /app/pyproject.toml ./pyproject.toml
@@ -68,17 +69,17 @@ root = Path('/usr/local/lib/python3.11/site-packages')
 shapely_libs = root / 'shapely.libs'
 if not list(shapely_libs.glob('libgeos-*.so.3.13.1')):
     raise SystemExit('Shapely wheel GEOS runtime library is missing from final image')
-private_library_dirs = [str(path) for path in root.glob('*.libs') if path.is_dir()]
-runtime_env = os.environ.copy()
-runtime_env['LD_LIBRARY_PATH'] = ':'.join(
-    private_library_dirs + ([runtime_env['LD_LIBRARY_PATH']] if runtime_env.get('LD_LIBRARY_PATH') else [])
-)
 for extension in root.rglob('*'):
     if not extension.is_file() or not re.search(r'\.so(?:\.\d+)*$', extension.name):
         continue
-    result = subprocess.run(
-        ['ldd', str(extension)], capture_output=True, text=True, env=runtime_env
-    )
+    runtime_env = os.environ.copy()
+    relative_path = extension.relative_to(root)
+    if relative_path.parts[0] in ('shapely', 'shapely.libs'):
+        private_library_dirs = [str(shapely_libs)]
+        if runtime_env.get('LD_LIBRARY_PATH'):
+            private_library_dirs.append(runtime_env['LD_LIBRARY_PATH'])
+        runtime_env['LD_LIBRARY_PATH'] = ':'.join(private_library_dirs)
+    result = subprocess.run(['ldd', str(extension)], capture_output=True, text=True, env=runtime_env)
     output = result.stdout + result.stderr
     if result.returncode != 0 or 'not found' in output or 'not a dynamic executable' in output:
         raise SystemExit(f'Unresolved runtime libraries for {extension}:\n{output}')
