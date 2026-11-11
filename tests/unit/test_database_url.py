@@ -40,9 +40,9 @@ class SyncDatabaseConfigTests(unittest.TestCase):
             fake_socket.calls,
             [
                 (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
-                (socket.SOL_SOCKET, socket.TCP_KEEPIDLE, 30),
-                (socket.SOL_SOCKET, socket.TCP_KEEPINTVL, 10),
-                (socket.SOL_SOCKET, socket.TCP_KEEPCNT, 5),
+                (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30),
+                (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10),
+                (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5),
             ],
         )
 

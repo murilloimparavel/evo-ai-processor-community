@@ -61,16 +61,16 @@ def configure_pg8000_keepalive(dbapi_connection, _connection_record):
         raise RuntimeError("pg8000 1.31.5 active socket is unavailable")
 
     options = (
-        ("SO_KEEPALIVE", 1),
-        ("TCP_KEEPIDLE", 30),
-        ("TCP_KEEPINTVL", 10),
-        ("TCP_KEEPCNT", 5),
+        (socket.SOL_SOCKET, "SO_KEEPALIVE", 1),
+        (socket.IPPROTO_TCP, "TCP_KEEPIDLE", 30),
+        (socket.IPPROTO_TCP, "TCP_KEEPINTVL", 10),
+        (socket.IPPROTO_TCP, "TCP_KEEPCNT", 5),
     )
-    for option_name, value in options:
+    for level, option_name, value in options:
         option = getattr(socket, option_name, None)
         if option is None:
             raise RuntimeError("Required TCP keepalive option is unavailable: " + option_name)
         try:
-            connection_socket.setsockopt(socket.SOL_SOCKET, option, value)
+            connection_socket.setsockopt(level, option, value)
         except OSError as exc:
             raise RuntimeError("Could not configure TCP keepalive option: " + option_name) from exc
