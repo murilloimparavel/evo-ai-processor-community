@@ -48,8 +48,18 @@ jobs:
         run: |
           set -euo pipefail
           image='gcr.io/distroless/python3-debian13:nonroot'
-          digest="$(docker buildx imagetools inspect "$image" | sed -n 's/^Digest: //p' | head -n1)"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          if ! inspect_output="$(docker buildx imagetools inspect "$image" 2>&1)"; then
+            printf '%s\n' "$inspect_output"
+            echo "::error::Could not inspect official Distroless image: $image" >&2
+            exit 1
+          fi
+          printf '%s\n' "$inspect_output"
+          digest="$(printf '%s\n' "$inspect_output" | awk '$1 == "Digest:" { print $2; exit }')"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not extract a valid sha256 digest from buildx output for $image" >&2
+            echo "Extracted value: '${digest:-<empty>}'" >&2
+            exit 1
+          fi
           echo "image=$image@$digest" >> "$GITHUB_OUTPUT"
           echo "Resolved $image to $digest"
 
