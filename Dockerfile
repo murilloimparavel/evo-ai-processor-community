@@ -57,6 +57,24 @@ COPY --from=builder /app/scripts/ ./scripts/
 COPY --from=builder /app/migrations/ ./migrations/
 COPY --from=builder /app/alembic.ini ./alembic.ini
 
+# Check every installed native extension against the final runtime filesystem,
+# then import the app without connecting to its external services.
+RUN python - <<'PY'
+from pathlib import Path
+import subprocess
+
+root = Path('/usr/local/lib/python3.11/site-packages')
+for extension in root.rglob('*.so'):
+    result = subprocess.run(['ldd', str(extension)], capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    if 'not a dynamic executable' in output:
+        continue
+    if result.returncode != 0 or 'not found' in output:
+        raise SystemExit(f'Unresolved runtime libraries for {extension}:\n{output}')
+PY
+RUN python scripts/verify_candidate_runtime.py \
+    && python -c "import src.main; assert hasattr(src.main, 'app')"
+
 ENV PORT=8000 \
     HOST=0.0.0.0 \
     DEBUG=false
