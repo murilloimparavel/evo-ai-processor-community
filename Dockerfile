@@ -88,9 +88,25 @@ for extension in root.rglob('*'):
         raise SystemExit(f'Unresolved runtime libraries for {extension}:\n{output}')
 PY
 RUN python scripts/verify_candidate_runtime.py \
-    && python -c "import shapely, pyarrow; assert shapely.geos_version_string.startswith('3.13.1')" \
-    && ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
-       python -c "import src.main; assert hasattr(src.main, 'app')"
+    && python -c "import shapely, pyarrow; assert shapely.geos_version_string.startswith('3.13.1')"
+
+# The application import requires a Fernet key. Generate a disposable value in
+# memory and pass it only to the smoke-test subprocess; it is never an ARG/ENV.
+RUN python - <<'PY'
+import base64
+import os
+import secrets
+import subprocess
+import sys
+
+env = os.environ.copy()
+env['ENCRYPTION_KEY'] = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode('ascii')
+subprocess.run(
+    [sys.executable, '-c', "import src.main; assert hasattr(src.main, 'app')"],
+    env=env,
+    check=True,
+)
+PY
 
 ENV PORT=8000 \
     HOST=0.0.0.0 \
