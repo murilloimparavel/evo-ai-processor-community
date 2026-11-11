@@ -6,23 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
-# Install system dependencies (this layer is cached unless system deps change)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Apply current distribution security updates before installing the app runtime.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
-    curl \
-    gnupg \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Node.js (cached layer)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Docker (cached layer)
-RUN curl -fsSL https://get.docker.com | bash
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
 
 # Install UV (cached layer)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
