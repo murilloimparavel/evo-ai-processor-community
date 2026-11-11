@@ -23,7 +23,7 @@ classifiers = [
 dependencies = [
     "fastapi==0.124.1",
     "uvicorn==0.34.2",
-    "pydantic==2.11.3",
+    "pydantic==2.12.0",
     "pydantic-settings==2.9.1",
     "sqlalchemy==2.0.40",
     "psycopg2-binary==2.9.10",
