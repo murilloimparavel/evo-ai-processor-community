@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
@@ -90,7 +91,14 @@ class ScopedToolsTest(unittest.IsolatedAsyncioTestCase):
         fake = ModuleType("src.services.adk.tools.evo_crm.manage_conversation_labels")
         fake.create_manage_conversation_labels_tool = lambda: SimpleNamespace(func=original)
         wrapped = self.authority._make_labels(self.root, "root")
-        self.assertNotIn("conversation_id", FunctionTool(wrapped)._get_declaration().parameters.properties)
+        # ADK may omit the declaration's parameters schema entirely when it
+        # infers an empty/optional schema. Keep checking the Python callable's
+        # public signature as the stable contract, then check its actual safe
+        # execution below.
+        self.assertNotIn("conversation_id", inspect.signature(wrapped).parameters)
+        declaration = FunctionTool(wrapped)._get_declaration()
+        properties = getattr(getattr(declaration, "parameters", None), "properties", {}) or {}
+        self.assertNotIn("conversation_id", properties)
         with patch.dict(sys.modules, {fake.__name__: fake}):
             await wrapped("add", ["foo"])
         self.authority._mutation_request.assert_awaited_once_with(self.root, "root", {"tool": "labels", "action": "add", "labels": ["foo"]})
