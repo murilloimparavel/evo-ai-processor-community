@@ -24,23 +24,28 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify the builder shares the local Docker image store
+        run: |
+          test "$(docker buildx inspect default --format '{{.Driver}}')" = docker
       - name: Build full runtime from the candidate commit
         uses: docker/build-push-action@v6
-        id: full
         with:
+          builder: default
           context: .
           file: Dockerfile
-          push: true
-          tags: ghcr.io/murilloimparavel/crcn-knowledge-processor:full-${{ github.event.pull_request.head.sha }}
+          load: true
+          push: false
+          tags: local/crcn-processor-full:sha-${{ github.event.pull_request.head.sha }}
       - name: Build the candidate from that exact full runtime
         uses: docker/build-push-action@v6
         with:
+          builder: default
           context: .
           file: Dockerfile.knowledge
           load: true
           push: false
           build-args: |
-            BASE_IMAGE=ghcr.io/murilloimparavel/crcn-knowledge-processor@${{ steps.full.outputs.digest }}
+            BASE_IMAGE=local/crcn-processor-full:sha-${{ github.event.pull_request.head.sha }}
             GIT_SHA=${{ github.event.pull_request.head.sha }}
           tags: ghcr.io/murilloimparavel/crcn-knowledge-processor:sha-${{ github.event.pull_request.head.sha }}
       - name: Verify candidate dependencies, imports, source manifest and revision
