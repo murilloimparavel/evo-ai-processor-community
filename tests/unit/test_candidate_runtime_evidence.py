@@ -93,3 +93,16 @@ class VendorEvidenceTest(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(RuntimeError, "79.0.1"):
                     verifier.require_single_distribution("setuptools", "84.2.1")
+
+    def test_stale_wheel_metadata_reports_version_and_origin(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            stale = SimpleNamespace(
+                metadata={"Name": "wheel"}, version="0.45.1",
+                locate_file=lambda _: root,
+            )
+            with patch.object(verifier, "distributions", return_value=[stale]), patch.object(
+                verifier.sysconfig, "get_paths", return_value={"purelib": str(root)}
+            ):
+                with self.assertRaisesRegex(RuntimeError, "wheel==0.45.1"):
+                    verifier.require_single_distribution("wheel", "0.48.0")

@@ -46,7 +46,9 @@ RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
-RUN python -m pip uninstall --yes setuptools
+# Clear build tooling bundled in the base image before copying the pinned
+# builder versions, so stale dist-info cannot shadow the candidate packages.
+RUN python -m pip uninstall --yes setuptools wheel
 
 COPY --from=builder /usr/local/ /usr/local/
 COPY --from=builder /root/.local/bin/uv /usr/local/bin/uv

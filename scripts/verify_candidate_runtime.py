@@ -78,7 +78,7 @@ def main():
     declared = dict(item.split("==", 1) for item in project["project"]["dependencies"] if "==" in item)
     for package in (
         "redis", "openai", "langgraph", "fastapi", "starlette", "authlib",
-        "mako", "litellm", "wheel", "google-adk", "google-genai",
+        "mako", "litellm", "google-adk", "google-genai",
         "pydantic", "pydantic-settings",
     ):
         expected = requirements[package]
@@ -88,6 +88,7 @@ def main():
     setuptools_dist = require_single_distribution("setuptools", requirements["setuptools"])
     setuptools_root = Path(setuptools_dist.locate_file("setuptools"))
     verify_setuptools_vendor(setuptools_root)
+    require_single_distribution("wheel", requirements["wheel"])
 
     # Exercise the SDK integration imports used by actual model/tool execution.
     import redis.asyncio
