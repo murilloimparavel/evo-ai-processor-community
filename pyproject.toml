@@ -47,7 +47,7 @@ dependencies = [
     "opentelemetry-sdk==1.37.0",
     "opentelemetry-exporter-otlp>=1.36.0",
     "a2a-sdk==0.2.4",
-    "mcp==1.9.0",
+    "mcp==1.23.0",
     "langgraph==0.4.1",
     "litellm==1.83.0",
     "greenlet==3.2.3",
