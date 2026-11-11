@@ -89,7 +89,8 @@ for extension in root.rglob('*'):
 PY
 RUN python scripts/verify_candidate_runtime.py \
     && python -c "import shapely, pyarrow; assert shapely.geos_version_string.startswith('3.13.1')" \
-    && python -c "import src.main; assert hasattr(src.main, 'app')"
+    && ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+       python -c "import src.main; assert hasattr(src.main, 'app')"
 
 ENV PORT=8000 \
     HOST=0.0.0.0 \
