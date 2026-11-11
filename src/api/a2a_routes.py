@@ -696,9 +696,17 @@ async def process_a2a_message(
 
         logger.info(f"📝 Method: {method}, ID: {request_id}")
 
-        from src.services.knowledge_runtime.pilot import bound_grants_required
-        pilot_bound = bound_grants_required(str(agent_id))
-        if ((pilot_bound and method != "message/send")
+        from src.services.knowledge_runtime.pilot import bound_grants_required, isolated_root_required
+        try:
+            pilot_bound = bound_grants_required(str(agent_id))
+            pilot_isolated = isolated_root_required(str(agent_id))
+        except ValueError:
+            return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={
+                "jsonrpc": "2.0", "id": request_id,
+                "error": {"code": -32000, "message": "Authenticated runtime configuration unavailable"},
+            })
+        if ((pilot_isolated and not pilot_bound)
+                or (pilot_bound and method != "message/send")
                 or (request.headers.get("X-Knowledge-Grant") and not pilot_bound)):
             return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={
                 "jsonrpc": "2.0", "id": request_id,

@@ -40,9 +40,11 @@ class PilotScopeTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     pilot_root_selected(root)
 
-    def test_absent_selector_preserves_global_opt_in(self):
-        self.assertTrue(isolated_root_required(ROOT_A))
-        self.assertTrue(bound_grants_required(ROOT_B))
+    def test_absent_selector_rejects_enabled_features(self):
+        with self.assertRaises(ValueError):
+            isolated_root_required(ROOT_A)
+        with self.assertRaises(ValueError):
+            bound_grants_required(ROOT_B)
         os.environ["KNOWLEDGE_RUNTIME_ISOLATION_MODE"] = "off"
         os.environ["KNOWLEDGE_A2A_BOUND_GRANTS_ENABLED"] = "false"
         self.assertFalse(isolated_root_required(ROOT_A))
@@ -51,6 +53,13 @@ class PilotScopeTest(unittest.TestCase):
     def test_unknown_mode_and_unknown_executor_fail_closed(self):
         os.environ["KNOWLEDGE_RUNTIME_PILOT_ROOT_IDS"] = ROOT_A
         os.environ["KNOWLEDGE_RUNTIME_ISOLATION_MODE"] = "typo"
-        self.assertTrue(isolated_root_required(ROOT_A))
+        with self.assertRaises(ValueError):
+            isolated_root_required(ROOT_A)
         with self.assertRaises(ValueError):
             isolated_root_required(None)
+
+    def test_malformed_feature_flag_is_rejected(self):
+        os.environ["KNOWLEDGE_RUNTIME_PILOT_ROOT_IDS"] = ROOT_A
+        os.environ["KNOWLEDGE_A2A_BOUND_GRANTS_ENABLED"] = "treu"
+        with self.assertRaises(ValueError):
+            bound_grants_required(ROOT_A)

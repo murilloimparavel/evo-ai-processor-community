@@ -16,7 +16,7 @@ def _canonical_uuid(value):
 def pilot_root_selected(agent_id):
     raw = os.getenv("KNOWLEDGE_RUNTIME_PILOT_ROOT_IDS")
     if raw is None:
-        return True  # Explicit legacy deployment mode: enabled flags are global.
+        raise ValueError("knowledge pilot roots must be explicitly configured")
     values = [item.strip() for item in raw.split(",")]
     if not 1 <= len(values) <= 100:
         raise ValueError("invalid knowledge pilot configuration")
@@ -27,8 +27,14 @@ def pilot_root_selected(agent_id):
 
 
 def bound_grants_required(agent_id):
-    return os.getenv("KNOWLEDGE_A2A_BOUND_GRANTS_ENABLED") == "true" and pilot_root_selected(agent_id)
+    enabled = os.getenv("KNOWLEDGE_A2A_BOUND_GRANTS_ENABLED", "false")
+    if enabled not in {"true", "false"}:
+        raise ValueError("invalid bound-grant configuration")
+    return enabled == "true" and pilot_root_selected(agent_id)
 
 
 def isolated_root_required(agent_id):
-    return os.getenv("KNOWLEDGE_RUNTIME_ISOLATION_MODE", "off") != "off" and pilot_root_selected(agent_id)
+    mode = os.getenv("KNOWLEDGE_RUNTIME_ISOLATION_MODE", "off")
+    if mode not in {"off", "required"}:
+        raise ValueError("invalid knowledge isolation mode")
+    return mode == "required" and pilot_root_selected(agent_id)
