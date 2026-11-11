@@ -102,7 +102,7 @@ import sys
 env = os.environ.copy()
 env['ENCRYPTION_KEY'] = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode('ascii')
 subprocess.run(
-    [sys.executable, '-c', "import src.main; assert hasattr(src.main, 'app')"],
+    [sys.executable, 'scripts/smoke_candidate_import.py'],
     env=env,
     check=True,
 )
