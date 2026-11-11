@@ -89,6 +89,7 @@ def main():
     setuptools_root = Path(setuptools_dist.locate_file("setuptools"))
     verify_setuptools_vendor(setuptools_root)
     require_single_distribution("wheel", requirements["wheel"])
+    require_single_distribution("packaging", requirements["packaging"])
 
     # Exercise the SDK integration imports used by actual model/tool execution.
     import redis.asyncio

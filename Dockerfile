@@ -46,9 +46,17 @@ RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
-# Clear build tooling bundled in the base image before copying the pinned
-# builder versions, so stale dist-info cannot shadow the candidate packages.
-RUN python -m pip uninstall --yes setuptools wheel
+# Report base-image copies before cleanup: COPY overlays files but does not
+# delete old dist-info directories from the runtime's /usr/local prefix.
+RUN python - <<'PY'
+from importlib.metadata import distributions
+
+for item in distributions():
+    if (item.metadata.get('Name') or '').lower() == 'packaging':
+        print(f'Runtime base: {item.metadata.get("Name")}=={item.version} at {item.locate_file("")}')
+PY
+# Clear packages bundled in the base image before copying pinned builder copies.
+RUN python -m pip uninstall --yes setuptools wheel packaging
 
 COPY --from=builder /usr/local/ /usr/local/
 COPY --from=builder /root/.local/bin/uv /usr/local/bin/uv

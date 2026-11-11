@@ -106,3 +106,19 @@ class VendorEvidenceTest(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(RuntimeError, "wheel==0.45.1"):
                     verifier.require_single_distribution("wheel", "0.48.0")
+
+    def test_duplicate_packaging_metadata_fails_closed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            candidates = [
+                SimpleNamespace(
+                    metadata={"Name": "packaging"}, version=version,
+                    locate_file=lambda _: root,
+                )
+                for version in ("25.0", "26.3")
+            ]
+            with patch.object(verifier, "distributions", return_value=candidates), patch.object(
+                verifier.sysconfig, "get_paths", return_value={"purelib": str(root)}
+            ):
+                with self.assertRaisesRegex(RuntimeError, "packaging==26.3"):
+                    verifier.require_single_distribution("packaging", "25.0")
