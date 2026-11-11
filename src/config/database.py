@@ -28,32 +28,36 @@
 """
 
 from sqlalchemy import create_engine
+from sqlalchemy import event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from src.config.settings import settings
+from src.config.database_url import (
+    configure_pg8000_keepalive,
+    get_sync_database_config,
+)
 
 POSTGRES_CONNECTION_STRING = settings.POSTGRES_CONNECTION_STRING
+SYNC_DATABASE_URL, SYNC_DATABASE_CONNECT_ARGS = get_sync_database_config(
+    POSTGRES_CONNECTION_STRING
+)
 
 # pool_pre_ping revalidates a pooled connection before handing it out, so a
 # connection dropped by the server (restart, idle timeout) is recycled instead
 # of surfacing as a 500 on the next request.
 #
-# TCP keepalives (libpq params, forwarded by psycopg2) keep the socket — and its
+# TCP keepalives keep the socket — and its
 # Docker Swarm/IPVS conntrack entry, which is reaped after ~15 min idle — alive
 # so a connection held across a slow operation is not silently dropped mid-query.
 # pre_ping only guards the checkout boundary; keepalives guard an already
 # checked-out connection.
 engine = create_engine(
-    POSTGRES_CONNECTION_STRING,
+    SYNC_DATABASE_URL,
     pool_pre_ping=True,
     pool_recycle=1800,
-    connect_args={
-        "keepalives": 1,
-        "keepalives_idle": 30,
-        "keepalives_interval": 10,
-        "keepalives_count": 5,
-    },
+    connect_args=SYNC_DATABASE_CONNECT_ARGS,
 )
+event.listen(engine, "connect", configure_pg8000_keepalive)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
