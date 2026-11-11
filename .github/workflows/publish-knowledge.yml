@@ -26,7 +26,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Verify the builder shares the local Docker image store
         run: |
-          test "$(docker buildx inspect default --format '{{.Driver}}')" = docker
+          set -euo pipefail
+          docker buildx inspect default | grep -Eq '^Driver:[[:space:]]+docker[[:space:]]*$'
       - name: Build full runtime from the candidate commit
         uses: docker/build-push-action@v6
         with:
