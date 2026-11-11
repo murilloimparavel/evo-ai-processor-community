@@ -54,3 +54,25 @@ jobs:
           done
       - name: Verify request-scoped availability budgets and HTTP builders
         run: python -m pytest -q tests/unit/test_availability_budget.py tests/unit/test_custom_tools.py tests/unit/test_transfer_handoff_contract.py
+
+  pr-ready:
+    name: PR ready
+    if: always()
+    needs: [protected-runtime]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful protected runtime tests
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY_GATE'
+          import json
+          import os
+
+          results = json.loads(os.environ['RESULTS'])
+          failed = [name for name, result in results.items() if result['result'] != 'success']
+          if failed:
+              raise SystemExit('Required runtime validation did not succeed: ' + ', '.join(failed))
+          print('All required runtime checks passed')
+          PY_GATE
