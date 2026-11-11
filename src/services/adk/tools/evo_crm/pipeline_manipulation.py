@@ -14,10 +14,15 @@ from src.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
+def _pipeline_rule_id(rule):
+    """Accept both CRM rule spellings used by the agent configuration."""
+    return rule.get("pipelineId") or rule.get("pipeline_id")
+
+
 async def _get_pipeline_criteria(client, pipeline_id, pipeline_rules):
     """Read only approved criteria for a pipeline explicitly granted to this agent."""
     if not _uuid_identity(pipeline_id) or not any(
-        isinstance(rule, dict) and _uuid_identity(rule.get('pipelineId')) == _uuid_identity(pipeline_id)
+        isinstance(rule, dict) and _uuid_identity(_pipeline_rule_id(rule)) == _uuid_identity(pipeline_id)
         for rule in pipeline_rules
     ):
         return {'status': 'error', 'action': 'get_pipeline_criteria', 'message': 'pipeline_not_configured'}
@@ -460,7 +465,7 @@ def create_pipeline_manipulation_tool(
             effective_pipeline_id = pipeline_id
             if not effective_pipeline_id and available_pipeline_rules:
                 if len(available_pipeline_rules) == 1:
-                    effective_pipeline_id = available_pipeline_rules[0].get("pipelineId")
+                    effective_pipeline_id = _pipeline_rule_id(available_pipeline_rules[0])
                     logger.info(f"Using default pipeline from rules: {effective_pipeline_id}")
                 elif len(available_pipeline_rules) > 1:
                     return {
@@ -638,7 +643,7 @@ async def _add_to_pipeline(
     """Add contact or conversation to a pipeline."""
 
     # Find pipeline rule
-    pipeline_rule = next((r for r in pipeline_rules if r.get("pipelineId") == pipeline_id), None)
+    pipeline_rule = next((r for r in pipeline_rules if _pipeline_rule_id(r) == pipeline_id), None)
 
     # Determine what to add (contact or conversation)
     if not contact_id and not conversation_id:
@@ -746,7 +751,7 @@ async def _move_to_stage(
 
     # Resolve stage_id from stage_name if not provided directly
     if not stage_id and stage_name and pipeline_rules:
-        pipeline_rule = next((r for r in pipeline_rules if r.get("pipelineId") == pipeline_id), None)
+        pipeline_rule = next((r for r in pipeline_rules if _pipeline_rule_id(r) == pipeline_id), None)
         if pipeline_rule:
             for s in pipeline_rule.get("stages", []):
                 if s.get("stageName", "").lower().strip() == stage_name.lower().strip():
@@ -756,7 +761,7 @@ async def _move_to_stage(
 
     if not stage_id:
         # List available stages for the user
-        pipeline_rule = next((r for r in pipeline_rules if r.get("pipelineId") == pipeline_id), None)
+        pipeline_rule = next((r for r in pipeline_rules if _pipeline_rule_id(r) == pipeline_id), None)
         available = ", ".join([s.get("stageName", "?") for s in pipeline_rule.get("stages", [])]) if pipeline_rule else "none"
         return {
             "status": "error",
@@ -765,7 +770,7 @@ async def _move_to_stage(
         }
 
     # Find pipeline and stage names from rules
-    pipeline_rule = next((r for r in pipeline_rules if r.get("pipelineId") == pipeline_id), None)
+    pipeline_rule = next((r for r in pipeline_rules if _pipeline_rule_id(r) == pipeline_id), None)
     stage_name = "unknown stage"
     if pipeline_rule:
         stage = next((s for s in pipeline_rule.get("stages", []) if s.get("stageId") == stage_id), None)
@@ -856,7 +861,7 @@ async def _create_task(
         }
 
     # Check if tasks are allowed for this pipeline
-    pipeline_rule = next((r for r in pipeline_rules if r.get("pipelineId") == pipeline_id), None)
+    pipeline_rule = next((r for r in pipeline_rules if _pipeline_rule_id(r) == pipeline_id), None)
     if pipeline_rule and not pipeline_rule.get("allowTasks", False):
         return {
             "status": "error",

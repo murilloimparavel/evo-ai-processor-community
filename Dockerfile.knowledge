@@ -1,4 +1,6 @@
-FROM ghcr.io/murilloimparavel/evo-ai-processor-community@sha256:abab8067fc886b633bcc50521d5aa19c1e288c2e5e5f82fc6855945d5daf0ae2
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+# BASE_IMAGE must be the full dependency image built from this same commit.
 # This release changes the A2A transport, runners, scoped tools and provenance.
 # A selective overlay can silently leave those modules at the base-image version.
 COPY src/ /app/src/

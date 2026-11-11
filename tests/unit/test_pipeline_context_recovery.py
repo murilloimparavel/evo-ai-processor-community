@@ -434,3 +434,32 @@ class PipelineContractRevisionTest(IsolatedAsyncioTestCase):
         for value in ('0', '0000', '002147483648', ' 4494', '4494x', True):
             self.assertIsNone(namespace['_display_identity'](value))
         self.assertEqual(namespace['_display_identity']('002147483647'), '2147483647')
+
+
+class SnakeCasePipelineRuleTest(IsolatedAsyncioTestCase):
+    async def test_snake_case_grant_reads_only_its_configured_catalog(self):
+        rules = [{'pipeline_id': PIPELINE, 'stages': RULES[0]['stages']}]
+        client = NS(get=AsyncMock(return_value=PipelineCatalogReadTest.projection(self)))
+        result = await namespace['_get_pipeline_criteria'](client, PIPELINE, rules)
+        self.assertEqual(result['status'], 'success')
+        client.get.assert_awaited_once()
+        client.get.reset_mock()
+        rejected = await namespace['_get_pipeline_criteria'](client, OTHER, rules)
+        self.assertEqual(rejected['message'], 'pipeline_not_configured')
+        client.get.assert_not_awaited()
+
+    async def test_single_snake_case_rule_infers_destination_and_resolves_stage_names(self):
+        rules = [{'pipeline_id': PIPELINE, 'stages': RULES[0]['stages']}]
+        client = NS(post=AsyncMock(return_value=create_response()), patch=AsyncMock(return_value=move_response()))
+        with patch.dict(namespace, EvoCrmClient=lambda: client):
+            tool = namespace['create_pipeline_manipulation_tool'](rules)
+            result = await tool.func(action='move_to_stage', conversation_id=CONVERSATION, stage_name='Selected')
+        self.assertEqual(result['status'], 'success')
+        self.assertIn(PIPELINE, client.patch.call_args.kwargs['endpoint'])
+
+        client.patch.reset_mock()
+        with patch.dict(namespace, EvoCrmClient=lambda: client):
+            tool = namespace['create_pipeline_manipulation_tool'](rules)
+            result = await tool.func(action='move_to_stage', conversation_id=CONVERSATION, stage_name='Unconfigured name')
+        self.assertEqual(result['status'], 'error')
+        client.patch.assert_not_awaited()
