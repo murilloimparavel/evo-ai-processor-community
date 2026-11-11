@@ -83,9 +83,10 @@ class IsolationGateTest(unittest.IsolatedAsyncioTestCase):
             await gate.run_required_isolation(authority=authority, utils=Utils(), agent_id="agent",
                                               external_id="arbitrary", files=None, timeout=5)
 
-    def test_unknown_mode_does_not_downgrade(self):
+    def test_unknown_mode_is_rejected(self):
         with patch.dict(os.environ, {"KNOWLEDGE_RUNTIME_ISOLATION_MODE": "bad-value"}):
-            self.assertTrue(gate.isolation_required())
+            with self.assertRaisesRegex(ValueError, "invalid knowledge isolation mode"):
+                gate.isolation_required()
         with patch.dict(os.environ, {"KNOWLEDGE_RUNTIME_ISOLATION_MODE": "off"}):
             self.assertFalse(gate.isolation_required())
 
