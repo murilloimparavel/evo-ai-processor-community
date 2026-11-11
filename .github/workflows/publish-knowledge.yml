@@ -73,7 +73,8 @@ jobs:
           image-ref: ghcr.io/murilloimparavel/crcn-knowledge-processor:sha-${{ github.event.pull_request.head.sha }}
           format: table
           exit-code: '1'
-          ignore-unfixed: true
+          version: v0.76.2
+          ignore-unfixed: false
           severity: CRITICAL,HIGH
       - name: Publish the verified candidate
         env:
