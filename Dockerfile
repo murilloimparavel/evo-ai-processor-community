@@ -60,19 +60,31 @@ COPY --from=builder /app/alembic.ini ./alembic.ini
 # then import the app without connecting to its external services.
 RUN python - <<'PY'
 from pathlib import Path
+import os
 import re
 import subprocess
 
 root = Path('/usr/local/lib/python3.11/site-packages')
+shapely_libs = root / 'shapely.libs'
+if not list(shapely_libs.glob('libgeos-*.so.3.13.1')):
+    raise SystemExit('Shapely wheel GEOS runtime library is missing from final image')
+private_library_dirs = [str(path) for path in root.glob('*.libs') if path.is_dir()]
+runtime_env = os.environ.copy()
+runtime_env['LD_LIBRARY_PATH'] = ':'.join(
+    private_library_dirs + ([runtime_env['LD_LIBRARY_PATH']] if runtime_env.get('LD_LIBRARY_PATH') else [])
+)
 for extension in root.rglob('*'):
     if not extension.is_file() or not re.search(r'\.so(?:\.\d+)*$', extension.name):
         continue
-    result = subprocess.run(['ldd', str(extension)], capture_output=True, text=True)
+    result = subprocess.run(
+        ['ldd', str(extension)], capture_output=True, text=True, env=runtime_env
+    )
     output = result.stdout + result.stderr
     if result.returncode != 0 or 'not found' in output or 'not a dynamic executable' in output:
         raise SystemExit(f'Unresolved runtime libraries for {extension}:\n{output}')
 PY
 RUN python scripts/verify_candidate_runtime.py \
+    && python -c "import shapely, pyarrow; assert shapely.geos_version_string.startswith('3.13.1')" \
     && python -c "import src.main; assert hasattr(src.main, 'app')"
 
 ENV PORT=8000 \
