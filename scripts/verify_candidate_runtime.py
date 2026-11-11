@@ -1,8 +1,9 @@
 """Check the built candidate without starting servers or contacting providers."""
 from email.parser import BytesParser
 import hashlib
-from importlib.metadata import distribution, version
+from importlib.metadata import distributions, version
 from pathlib import Path
+import sysconfig
 import tomllib
 
 
@@ -42,6 +43,30 @@ def verify_setuptools_vendor(setuptools_root):
         verify_vendor_package(vendor, *package)
 
 
+def require_single_distribution(name, expected_version):
+    """Reject shadowed/duplicate metadata instead of trusting first-match lookup."""
+    normalized = name.lower().replace("-", "_").replace(".", "_")
+    matches = [
+        item for item in distributions()
+        if (item.metadata.get("Name") or "").lower().replace("-", "_").replace(".", "_") == normalized
+    ]
+    details = [
+        f"{item.metadata.get('Name')}=={item.version} at {item.locate_file('')}"
+        for item in matches
+    ]
+    expected_root = Path(sysconfig.get_paths()["purelib"]).resolve()
+    if (
+        len(matches) != 1
+        or matches[0].version != expected_version
+        or Path(matches[0].locate_file("")).resolve() != expected_root
+    ):
+        raise RuntimeError(
+            f"Expected one {name}=={expected_version} in {expected_root}; "
+            f"found: {details or 'none'}"
+        )
+    return matches[0]
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     requirements = dict(
@@ -53,14 +78,15 @@ def main():
     declared = dict(item.split("==", 1) for item in project["project"]["dependencies"] if "==" in item)
     for package in (
         "redis", "openai", "langgraph", "fastapi", "starlette", "authlib",
-        "mako", "litellm", "setuptools", "wheel", "google-adk", "google-genai",
+        "mako", "litellm", "wheel", "google-adk", "google-genai",
         "pydantic", "pydantic-settings",
     ):
         expected = requirements[package]
         if declared.get(package, expected) != expected or version(package) != expected:
             raise RuntimeError(f"Candidate dependency mismatch for {package}")
 
-    setuptools_root = Path(distribution("setuptools").locate_file("setuptools"))
+    setuptools_dist = require_single_distribution("setuptools", requirements["setuptools"])
+    setuptools_root = Path(setuptools_dist.locate_file("setuptools"))
     verify_setuptools_vendor(setuptools_root)
 
     # Exercise the SDK integration imports used by actual model/tool execution.

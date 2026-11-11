@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 path = Path(__file__).resolve().parents[2] / 'scripts/verify_candidate_runtime.py'
 spec = importlib.util.spec_from_file_location('candidate_evidence', path)
@@ -62,3 +64,32 @@ class VendorEvidenceTest(unittest.TestCase):
         (self.source.parent / 'old.py').write_text('old code')
         with self.assertRaises(RuntimeError):
             self.verify()
+
+    def test_single_expected_distribution_in_runtime_site_packages_passes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            dist = SimpleNamespace(
+                metadata={"Name": "setuptools"}, version="84.2.1",
+                locate_file=lambda _: root,
+            )
+            with patch.object(verifier, "distributions", return_value=[dist]), patch.object(
+                verifier.sysconfig, "get_paths", return_value={"purelib": str(root)}
+            ):
+                self.assertIs(verifier.require_single_distribution("setuptools", "84.2.1"), dist)
+
+    def test_duplicate_or_shadowed_distribution_metadata_fails_closed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            good = SimpleNamespace(
+                metadata={"Name": "setuptools"}, version="84.2.1",
+                locate_file=lambda _: root,
+            )
+            shadow = SimpleNamespace(
+                metadata={"Name": "setuptools"}, version="79.0.1",
+                locate_file=lambda _: Path("/usr/lib/python3/dist-packages"),
+            )
+            with patch.object(verifier, "distributions", return_value=[good, shadow]), patch.object(
+                verifier.sysconfig, "get_paths", return_value={"purelib": str(root)}
+            ):
+                with self.assertRaisesRegex(RuntimeError, "79.0.1"):
+                    verifier.require_single_distribution("setuptools", "84.2.1")

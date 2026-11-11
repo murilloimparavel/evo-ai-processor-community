@@ -46,6 +46,7 @@ RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
+RUN python -m pip uninstall --yes setuptools
 
 COPY --from=builder /usr/local/ /usr/local/
 COPY --from=builder /root/.local/bin/uv /usr/local/bin/uv
