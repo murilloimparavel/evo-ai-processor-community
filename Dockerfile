@@ -21,9 +21,6 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Docker (cached layer)
-RUN curl -fsSL https://get.docker.com | bash
-
 # Install UV (cached layer)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
@@ -52,4 +49,4 @@ ENV PORT=8000 \
 # Expose port
 EXPOSE 8000
 
-CMD ["sh", "-c", "alembic upgrade head && python -m scripts.run_seeders && uvicorn src.main:app --host $HOST --port $PORT"] 
+CMD ["sh", "-c", "alembic upgrade head && python -m scripts.run_seeders && uvicorn src.main:app --host $HOST --port $PORT"]
