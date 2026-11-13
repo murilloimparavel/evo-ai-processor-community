@@ -207,3 +207,98 @@ class TestA2AMessageSendErrorEnvelope:
         assert body["error"]["code"] == -32602
         assert body["error"]["data"]["missing"] == "message"
         assert "success" not in body
+
+
+class TestInactivityRunResponse:
+    def test_runner_artifact_is_neutral_only_for_inactivity(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, Mock
+
+        from src.api.a2a_routes import build_a2a_artifacts
+        from src.services.adk.runners.standard_runner import StandardRunner
+
+        class Event:
+            usage_metadata = None
+            actions = SimpleNamespace(escalate=False)
+            content = SimpleNamespace(
+                role="model",
+                parts=[SimpleNamespace(
+                    text="Vou consultar opções e já retorno.",
+                    thought=False,
+                    function_call=None,
+                    function_response=None,
+                )],
+            )
+
+            def model_dump(self):
+                return {"content": {"parts": [{"text": self.content.parts[0].text}]}}
+
+            def is_final_response(self):
+                return True
+
+        class AgentRunner:
+            def run_async(self, **_kwargs):
+                async def events():
+                    yield Event()
+                return events()
+
+        async def execute(metadata):
+            root_agent = SimpleNamespace(tools=[object()], sub_agents=[])
+            runner = StandardRunner(db=None)
+            runner.utils.get_and_build_agent = AsyncMock(return_value=(root_agent, {}))
+            runner.utils.create_session_id = Mock(return_value="session")
+            runner.utils.create_runner = Mock(return_value=AgentRunner())
+            runner.utils.get_or_create_session = AsyncMock(return_value=SimpleNamespace())
+            runner.utils.setup_session_state = AsyncMock()
+            runner.utils.process_files = AsyncMock(return_value=([], []))
+            runner.utils.create_content = Mock(return_value=object())
+
+            result = await runner.run_agent(
+                agent_id="00000000-0000-0000-0000-000000000001",
+                external_id="conversation",
+                message="Pode continuar?",
+                session_service=object(),
+                artifacts_service=object(),
+                metadata=metadata,
+            )
+            artifacts = build_a2a_artifacts(
+                result["final_response"],
+                terminal_handoff=result["terminal_handoff"],
+            )
+            return root_agent, result, artifacts
+
+        inactivity_root, inactivity_result, inactivity_artifacts = asyncio.run(
+            execute({"evoai_crm_event": "inactivity_action"})
+        )
+        assert inactivity_root.tools == []
+        assert inactivity_result["final_response"] == "Posso ajudar em mais alguma coisa?"
+        assert inactivity_artifacts[0]["parts"][0]["text"] == "Posso ajudar em mais alguma coisa?"
+
+        normal_root, normal_result, normal_artifacts = asyncio.run(
+            execute({"evoai_crm_event": "message_created"})
+        )
+        assert normal_root.tools
+        assert normal_result["final_response"] == "Vou consultar opções e já retorno."
+        assert normal_artifacts[0]["parts"][0]["text"] == "Vou consultar opções e já retorno."
+
+    def test_top_level_event_cannot_be_overridden_by_nested_metadata(self) -> None:
+        from src.api.a2a_routes import extract_metadata_from_request
+
+        inactivity = extract_metadata_from_request({
+            "metadata": {"evoai_crm_event": "inactivity_action"},
+            "message": {"metadata": {"evoai_crm_event": "message_created"}},
+        })
+        assert inactivity["evoai_crm_event"] == "inactivity_action"
+
+        normal = extract_metadata_from_request({
+            "metadata": {"evoai_crm_event": "message_created"},
+            "message": {"metadata": {"evoai_crm_event": "inactivity_action"}},
+        })
+        assert normal["evoai_crm_event"] == "message_created"
+
+        # Preserve A2A's legacy nested-metadata behavior when no top-level
+        # event exists.
+        nested_only = extract_metadata_from_request({
+            "message": {"metadata": {"evoai_crm_event": "inactivity_action"}},
+        })
+        assert nested_only["evoai_crm_event"] == "inactivity_action"

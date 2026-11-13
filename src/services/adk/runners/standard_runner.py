@@ -134,6 +134,25 @@ def _event_has_successful_terminal_handoff(event_dict: Dict[str, Any]) -> bool:
     return False
 
 
+def _apply_inactivity_action_reply(
+    reply: str,
+    metadata: Optional[Dict[str, Any]],
+    terminal_handoff: bool = False,
+) -> str:
+    """Use a safe deterministic follow-up unless a terminal handoff succeeded."""
+    metadata = metadata or {}
+    if terminal_handoff or metadata.get("evoai_crm_event") != "inactivity_action":
+        return reply
+    return "Posso ajudar em mais alguma coisa?"
+
+
+def _should_persist_agent_event_to_memory(
+    load_memory_enabled: bool, is_inactivity_action: bool
+) -> bool:
+    """Synthetic inactivity turns never enter shared agent memory."""
+    return load_memory_enabled and not is_inactivity_action
+
+
 class StandardRunner:
     """Runner for non-streaming agent execution."""
 
@@ -549,7 +568,9 @@ class StandardRunner:
                                                 compression_interval = agent_config.get("memory_medium_term_compression_interval")
 
                                     # Only save to memory if load_memory is enabled
-                                    if load_memory_enabled:
+                                    if _should_persist_agent_event_to_memory(
+                                        load_memory_enabled, is_inactivity_action
+                                    ):
                                         # Determine role (agent response)
                                         role = "agent"
 
@@ -600,6 +621,10 @@ class StandardRunner:
                         "Desculpe, não consegui concluir minha resposta agora. "
                         "Pode me enviar sua mensagem novamente?"
                     )
+
+                final_response_text = _apply_inactivity_action_reply(
+                    final_response_text, metadata, terminal_handoff
+                )
 
                 try:
                     if not hasattr(root_agent, "model"):
