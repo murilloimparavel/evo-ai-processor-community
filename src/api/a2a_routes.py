@@ -776,8 +776,9 @@ async def process_a2a_message(
 def extract_metadata_from_request(params: Dict[str, Any]) -> Dict[str, Any]:
     """Extract metadata from request according to A2A spec."""
     metadata = {}
-    if "metadata" in params:
-        metadata = params["metadata"]
+    request_metadata = params.get("metadata")
+    if isinstance(request_metadata, dict):
+        metadata = dict(request_metadata)
 
     message = params.get("message")
     if message and "metadata" in message:
@@ -787,6 +788,11 @@ def extract_metadata_from_request(params: Dict[str, Any]) -> Dict[str, Any]:
     for part in message_parts:
         if part and "metadata" in part:
             metadata.update(part["metadata"])
+
+    # The event identifies the trusted request path. Nested message metadata
+    # must not turn an inactivity action into an ordinary tool-enabled run.
+    if isinstance(request_metadata, dict) and "evoai_crm_event" in request_metadata:
+        metadata["evoai_crm_event"] = request_metadata["evoai_crm_event"]
 
     return metadata
 
