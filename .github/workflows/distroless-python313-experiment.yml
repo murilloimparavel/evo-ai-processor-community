@@ -1,0 +1,138 @@
+name: Experimental distroless Python 3.13 runtime
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Dockerfile.distroless-experiment'
+      - 'scripts/container_entrypoint.py'
+      - 'requirements.txt'
+      - 'pyproject.toml'
+      - 'src/**'
+      - 'scripts/**'
+      - 'migrations/**'
+      - '.github/workflows/distroless-python313-experiment.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: distroless_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d distroless_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Resolve and record official distroless runtime digest
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          image='gcr.io/distroless/python3-debian13:nonroot'
+          if ! inspect_output="$(docker buildx imagetools inspect "$image" 2>&1)"; then
+            printf '%s\n' "$inspect_output"
+            echo "::error::Could not inspect official Distroless image: $image" >&2
+            exit 1
+          fi
+          printf '%s\n' "$inspect_output"
+          digest="$(printf '%s\n' "$inspect_output" | awk '$1 == "Digest:" { print $2; exit }')"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not extract a valid sha256 digest from buildx output for $image" >&2
+            echo "Extracted value: '${digest:-<empty>}'" >&2
+            exit 1
+          fi
+          echo "image=$image@$digest" >> "$GITHUB_OUTPUT"
+          echo "Resolved $image to $digest"
+
+      - name: Build isolated candidate without publishing
+        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+        with:
+          context: .
+          file: Dockerfile.distroless-experiment
+          platforms: linux/amd64
+          build-args: |
+            DISTROLESS_BASE=${{ steps.runtime.outputs.image }}
+          push: false
+          load: true
+          tags: local/evo-ai-processor-distroless:python313-${{ github.sha }}
+
+      - name: Generate disposable smoke encryption key
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          import base64, secrets
+          print('SMOKE_ENCRYPTION_KEY=' + base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())
+          PY
+
+      - name: Verify normal entrypoint, HTTP startup and graceful stop
+        shell: bash
+        env:
+          IMAGE: local/evo-ai-processor-distroless:python313-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker run -d --name distroless-app --network host \
+            -e ENCRYPTION_KEY="$SMOKE_ENCRYPTION_KEY" \
+            -e POSTGRES_CONNECTION_STRING=postgresql://postgres:test-only@127.0.0.1:5432/distroless_test \
+            -e PORT=18000 \
+            "$IMAGE"
+          ready=false
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18000/healthz; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" != true ]]; then
+            docker logs distroless-app
+            exit 1
+          fi
+          docker stop --time 20 distroless-app
+          exit_code="$(docker inspect --format '{{.State.ExitCode}}' distroless-app)"
+          [[ "$exit_code" == 0 ]]
+          docker rm distroless-app
+
+      - name: Verify runtime imports and isolated app smoke in final no-shell image
+        shell: bash
+        env:
+          IMAGE: local/evo-ai-processor-distroless:python313-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /venv/bin/python "$IMAGE" -c \
+            'import sys, shapely, pyarrow, pg8000; print(sys.version); print(shapely.geos_version_string, pyarrow.__version__, pg8000.__version__)'
+          docker run --rm --entrypoint /venv/bin/python \
+            -e ENCRYPTION_KEY="$SMOKE_ENCRYPTION_KEY" \
+            -e POSTGRES_CONNECTION_STRING=postgresql://smoke:smoke@127.0.0.1:1/smoke \
+            "$IMAGE" /app/scripts/smoke_candidate_import.py
+          docker run --rm --entrypoint /venv/bin/python \
+            -v "$PWD/tests:/app/tests:ro" "$IMAGE" \
+            -m unittest discover -s /app/tests/unit -p 'test_candidate_runtime_evidence.py' -v
+
+      - name: Scan experimental image with the production vulnerability gate
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: local/evo-ai-processor-distroless:python313-${{ github.sha }}
+          format: table
+          exit-code: '1'
+          version: v0.76.2
+          ignore-unfixed: false
+          severity: CRITICAL,HIGH

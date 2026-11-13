@@ -1,0 +1,84 @@
+name: Publish isolated knowledge image
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  publish:
+    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate pipeline recovery, CRM context and canonical criteria
+        run: python -m unittest discover -s tests/unit -p 'test_pipeline_*.py' -v
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify the builder shares the local Docker image store
+        run: |
+          set -euo pipefail
+          docker buildx inspect default | grep -Eq '^Driver:[[:space:]]+docker[[:space:]]*$'
+      - name: Build full runtime from the candidate commit
+        uses: docker/build-push-action@v6
+        with:
+          builder: default
+          context: .
+          file: Dockerfile
+          load: true
+          push: false
+          tags: local/crcn-processor-full:sha-${{ github.event.pull_request.head.sha }}
+      - name: Build the candidate from that exact full runtime
+        uses: docker/build-push-action@v6
+        with:
+          builder: default
+          context: .
+          file: Dockerfile.knowledge
+          load: true
+          push: false
+          build-args: |
+            BASE_IMAGE=local/crcn-processor-full:sha-${{ github.event.pull_request.head.sha }}
+            GIT_SHA=${{ github.event.pull_request.head.sha }}
+          tags: ghcr.io/murilloimparavel/crcn-knowledge-processor:sha-${{ github.event.pull_request.head.sha }}
+      - name: Verify candidate dependencies, imports, source manifest and revision
+        env:
+          IMAGE: ghcr.io/murilloimparavel/crcn-knowledge-processor:sha-${{ github.event.pull_request.head.sha }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          docker run --rm --entrypoint sh -e EXPECTED_SHA "$IMAGE" -c \
+            'cd /app && test "$(cat .git_sha)" = "$EXPECTED_SHA" && sha256sum -c knowledge-source.sha256 && uv pip check --system && python scripts/verify_candidate_runtime.py'
+      - name: Exercise pipeline and isolated-tool regressions in the actual candidate
+        env:
+          IMAGE: ghcr.io/murilloimparavel/crcn-knowledge-processor:sha-${{ github.event.pull_request.head.sha }}
+        run: |
+          docker run --rm --entrypoint python -v "$PWD/tests:/app/tests:ro" "$IMAGE" \
+            -m unittest discover -s tests/unit -p 'test_pipeline_*.py' -v
+          docker run --rm --entrypoint python -v "$PWD/tests:/app/tests:ro" "$IMAGE" \
+            -m unittest discover -s tests/unit -p 'test_candidate_runtime_evidence.py' -v
+          docker run --rm --entrypoint python -v "$PWD/tests:/app/tests:ro" \
+            -e ENCRYPTION_KEY=hAAcxHzMlM1BiZWpVQlZ4b0hTZ0dJbEZzWWVQb0k9PQ= \
+            -e POSTGRES_CONNECTION_STRING=postgresql://tests:tests@localhost:5432/tests \
+            -e JWT_SECRET_KEY=test-secret "$IMAGE" \
+            -m unittest discover -s tests/unit -p 'test_secure_custom*.py' -v
+      - name: Scan the actual candidate before publishing it
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/murilloimparavel/crcn-knowledge-processor:sha-${{ github.event.pull_request.head.sha }}
+          format: table
+          exit-code: '1'
+          version: v0.76.2
+          ignore-unfixed: false
+          severity: CRITICAL,HIGH
+      - name: Publish the verified candidate
+        env:
+          IMAGE: ghcr.io/murilloimparavel/crcn-knowledge-processor:sha-${{ github.event.pull_request.head.sha }}
+        run: docker push "$IMAGE"

@@ -1,0 +1,156 @@
+# Isolated CI candidate only. This file is deliberately not used by publish or
+# deployment workflows. Keep builder ABI aligned with distroless python3-debian13.
+ARG DISTROLESS_BASE=gcr.io/distroless/python3-debian13:nonroot
+FROM python:3.13-slim-trixie AS builder
+
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+# The distroless runtime's interpreter is /usr/bin/python. Match that path
+# while creating the venv, as prescribed by the upstream distroless example.
+RUN ln -s /usr/local/bin/python /usr/bin/python \
+    && /usr/bin/python -m venv /venv
+
+COPY requirements.txt ./requirements.txt
+RUN uv pip install --python /venv/bin/python --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+COPY README.md ./README.md
+COPY pyproject.toml ./pyproject.toml
+COPY scripts/ ./scripts/
+COPY migrations/ ./migrations/
+COPY alembic.ini ./alembic.ini
+RUN uv pip install --python /venv/bin/python --no-cache-dir -e . --no-deps
+
+# Check native extension resolution in the Debian 13 compatible builder. The
+# final image is additionally exercised by imports in the no-shell CI job.
+RUN /venv/bin/python - <<'PY'
+from pathlib import Path
+import os
+import re
+import subprocess
+
+root = Path('/venv/lib/python3.13/site-packages')
+shapely_libs = root / 'shapely.libs'
+if not list(shapely_libs.glob('libgeos-*.so.*')):
+    raise SystemExit('Shapely bundled GEOS runtime library is missing')
+for extension in root.rglob('*'):
+    if not extension.is_file() or not re.search(r'\.so(?:\.\d+)*$', extension.name):
+        continue
+    runtime_env = os.environ.copy()
+    if extension.relative_to(root).parts[0] in ('shapely', 'shapely.libs'):
+        runtime_env['LD_LIBRARY_PATH'] = str(shapely_libs)
+    result = subprocess.run(['ldd', str(extension)], capture_output=True, text=True, env=runtime_env)
+    output = result.stdout + result.stderr
+    if result.returncode != 0 or 'not found' in output or 'not a dynamic executable' in output:
+        raise SystemExit(f'Unresolved native runtime libraries for {extension}:\n{output}')
+PY
+
+RUN /venv/bin/python -m pip check \
+    && /venv/bin/python scripts/verify_candidate_runtime.py \
+    && /venv/bin/python -c "import shapely, pyarrow, pg8000; print('Python', __import__('sys').version); print('GEOS', shapely.geos_version_string); print('PyArrow', pyarrow.__version__); print('pg8000', pg8000.__version__)"
+
+# Validate app import in the builder with a disposable key and local dummy DB
+# URL. The workflow repeats this check in the actual distroless image.
+RUN python - <<'PY'
+import base64
+import os
+import secrets
+import subprocess
+import sys
+
+env = os.environ.copy()
+env.update({
+    'ENCRYPTION_KEY': base64.urlsafe_b64encode(secrets.token_bytes(32)).decode('ascii'),
+    'POSTGRES_CONNECTION_STRING': 'postgresql://smoke:smoke@127.0.0.1:1/smoke',
+})
+subprocess.run(['/venv/bin/python', 'scripts/smoke_candidate_import.py'], env=env, check=True)
+PY
+
+FROM ${DISTROLESS_BASE} AS runtime
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    PATH=/venv/bin:/usr/bin \
+    PORT=8000 \
+    HOST=0.0.0.0 \
+    DEBUG=false
+
+COPY --from=builder --chown=nonroot:nonroot /venv/ /venv/
+COPY --from=builder --chown=nonroot:nonroot /app/requirements.txt ./requirements.txt
+COPY --from=builder --chown=nonroot:nonroot /app/src/ ./src/
+COPY --from=builder --chown=nonroot:nonroot /app/README.md ./README.md
+COPY --from=builder --chown=nonroot:nonroot /app/pyproject.toml ./pyproject.toml
+COPY --from=builder --chown=nonroot:nonroot /app/scripts/ ./scripts/
+COPY --from=builder --chown=nonroot:nonroot /app/migrations/ ./migrations/
+COPY --from=builder --chown=nonroot:nonroot /app/alembic.ini ./alembic.ini
+
+# Inspect ELF dependencies against the actual final runtime filesystem. The
+# ldd tool runs in a compatible Debian 13 stage, while library search is
+# restricted to files copied from distroless; resolving against builder-only
+# libraries fails the build.
+FROM python:3.13-slim-trixie AS inspect-runtime
+COPY --from=runtime / /distroless/
+RUN python - <<'PY'
+from pathlib import Path
+import os
+import re
+import subprocess
+
+site_packages = Path('/distroless/venv/lib/python3.13/site-packages')
+if not site_packages.is_dir():
+    raise SystemExit(f'Distroless venv site-packages missing: {site_packages}')
+extensions = [
+    path for path in site_packages.rglob('*')
+    if path.is_file() and re.search(r'\.so(?:\.\d+)*$', path.name)
+]
+if not extensions:
+    raise SystemExit('No native extension modules found in distroless venv')
+targets = [Path('/distroless/usr/bin/python'), *extensions]
+if not targets[0].exists():
+    raise SystemExit('Distroless Python executable is missing')
+runtime_library_dirs = [
+    '/distroless/lib/x86_64-linux-gnu',
+    '/distroless/usr/lib/x86_64-linux-gnu',
+    '/distroless/lib',
+    '/distroless/usr/lib',
+    str(site_packages),
+]
+shapely_libs = site_packages / 'shapely.libs'
+if shapely_libs.is_dir():
+    runtime_library_dirs.insert(0, str(shapely_libs))
+env = os.environ.copy()
+env['LD_LIBRARY_PATH'] = ':'.join(runtime_library_dirs)
+for target in targets:
+    result = subprocess.run(['ldd', str(target)], capture_output=True, text=True, env=env)
+    output = result.stdout + result.stderr
+    if result.returncode != 0 or 'not found' in output or 'not a dynamic executable' in output:
+        raise SystemExit(f'Unresolved libraries in distroless runtime for {target}:\n{output}')
+    for line in output.splitlines():
+        resolved = re.search(r'=>\s+(/[^\s]+)', line)
+        if resolved and not resolved.group(1).startswith('/distroless/'):
+            raise SystemExit(f'{target} resolves outside distroless rootfs: {line}')
+Path('/runtime-ldd-verified').write_text(
+    f'ldd checked {len(targets)} runtime objects against distroless rootfs\n'
+)
+print(Path('/runtime-ldd-verified').read_text(), end='')
+PY
+
+# Keep this as the default final stage and make it depend on the ldd gate.
+FROM runtime AS candidate
+COPY --from=inspect-runtime /runtime-ldd-verified /runtime-ldd-verified
+
+EXPOSE 8000
+ENTRYPOINT ["/venv/bin/python"]
+CMD ["/app/scripts/container_entrypoint.py"]

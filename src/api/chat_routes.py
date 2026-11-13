@@ -69,7 +69,7 @@ WS_RUNTIME_PERMISSION = "ai_agent_processor.execute"
 import logging
 import json
 from typing import Optional
-from jose import jwt, JWTError
+import jwt
 from src.config.settings import settings
 from src.utils.response import success_response, error_response, map_status_to_error_code
 from src.schemas.responses import SuccessResponse, ErrorResponse
@@ -131,7 +131,7 @@ async def get_jwt_token_ws(token: str, skip_validation: bool = False) -> Optiona
             token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
         )
         return payload
-    except JWTError:
+    except jwt.PyJWTError:
         return None
 
 @router.websocket("/ws/{agent_id}/{user_id}/{session_id}")

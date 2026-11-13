@@ -1306,18 +1306,13 @@ async def delete_session_sync(
     "/{session_id}/events",
     response_model=SessionEventResponse,
     status_code=status.HTTP_201_CREATED,
+    responses={404: {"description": "Not found"}},
 )
 async def create_session_event(
     session_id: str,
     event_data: SessionEventCreate,
     request: Request,
-    x_api_key: str = Header(
-        None,
-        responses={
-            404: {"description": "Not found"}
-        },
-        alias="x-api-key"
-    ),
+    x_api_key: str = Header(None, alias="x-api-key"),
     db: Session = Depends(get_db),
 ):
     """

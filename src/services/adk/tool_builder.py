@@ -45,6 +45,8 @@ from src.services.adk.custom_tools import (
 from src.services.adk.tools import exit_loop
 from src.services.adk.tools import create_text_to_speech_tool
 
+from src.services.adk.availability_budget import is_availability_http_tool, consume_availability_query
+
 logger = setup_logger(__name__)
 
 
@@ -67,7 +69,13 @@ class ToolBuilder:
         query_params = parameters.get("query_params") or {}
         body_params = parameters.get("body_params") or {}
 
+        availability = is_availability_http_tool(tool_config)
+
         def http_tool(**kwargs):
+            if availability:
+                denied = consume_availability_query()
+                if denied is not None:
+                    return json.dumps(denied, ensure_ascii=False)
             try:
                 # Combines default values with provided values
                 all_values = {**values, **normalize_http_tool_kwargs(http_tool, kwargs)}
@@ -308,6 +316,21 @@ class ToolBuilder:
         # Add exit_loop tool if specified in configuration
         if agent_config.get("enable_exit_loop", False):
             self.tools.append(self._create_exit_loop_tool())
+
+        # Published CRM knowledge is native to the Community installation.
+        # Keep the legacy preload integration independent of this on-demand tool.
+        if agent_config.get("load_knowledge", False):
+            from src.services.adk.tools.evo_crm.search_crm_knowledge import (
+                create_search_crm_knowledge_tool,
+            )
+
+            raw_limit = agent_config.get("knowledge_max_results", 5)
+            try:
+                knowledge_limit = max(1, min(10, int(raw_limit)))
+            except (TypeError, ValueError):
+                knowledge_limit = 5
+            self.tools.append(create_search_crm_knowledge_tool(knowledge_limit))
+            logger.info("Added native search_crm_knowledge tool")
 
         # Process CRM tools if enabled
         # Enable CRM tools if transfer_to_human, allow_reminders, allow_contact_edit, allow_pipeline_manipulation

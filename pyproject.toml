@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools==84.2.1", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,54 +10,54 @@ readme = "README.md"
 authors = [
     {name = "Davidson Gomes", email = "contato@evolution-api.com"}
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
 
 # Main dependencies
 dependencies = [
-    "fastapi==0.115.12",
+    "fastapi==0.162.4",
     "uvicorn==0.34.2",
-    "pydantic==2.11.3",
-    "pydantic-settings==2.9.1",
+    "pydantic==2.14.3",
+    "pydantic-settings==2.14.1",
     "sqlalchemy==2.0.40",
-    "psycopg2-binary==2.9.10",
+    "pg8000==1.31.5",
     "python-dotenv==1.1.0",
     "alembic==1.15.2",
     "asyncpg==0.30.0",
     "httpx==0.28.1",
     "httpx-sse==0.4.0",
-    "redis==5.3.0",
-    "pyjwt[crypto]==2.9.0",
-    "python-jose==3.4.0",
+    "redis==7.4.1",
+    "pyjwt[crypto]==2.14.0",
     "opensearch-py==2.8.0",
     "pinecone==7.0.1",
-    "openai==1.69.0",
+    "openai==2.20.0",
     "google-auth>=2.27.0",
     "google-auth-oauthlib>=1.2.0",
     "google-api-python-client>=2.116.0",
     "qdrant-client==1.14.2",
     "requests==2.32.4",
     "minio==7.2.15",
-    "google-adk==1.19.0",
-    "opentelemetry-sdk==1.37.0",
+    "google-adk==2.14.0",
+    "opentelemetry-sdk==1.44.0",
     "opentelemetry-exporter-otlp>=1.36.0",
     "a2a-sdk==0.2.4",
-    "mcp==1.9.0",
-    "langgraph==0.4.1",
-    "litellm>=1.68.0,<1.69.0",
+    "mcp==1.28.1",
+    "langgraph==1.2.20",
+    "litellm==1.109.0",
     "greenlet==3.2.3",
     "psutil==5.9.8"
 ]
 
 [project.optional-dependencies]
 dev = [
-    "black==25.1.0",
+    "black==26.10.1",
     "flake8==7.2.0",
     "pytest==8.3.5",
     "pytest-cov==6.1.1",

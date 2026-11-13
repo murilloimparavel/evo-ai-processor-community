@@ -41,6 +41,8 @@ import asyncio
 import json
 import uuid
 
+from src.services.adk.availability_budget import budgeted_stream
+
 logger = setup_logger(__name__)
 
 
@@ -84,6 +86,7 @@ class StreamingRunner:
 
         return event_dict
 
+    @budgeted_stream
     async def run_agent_stream(
         self,
         agent_id: str,
@@ -100,6 +103,11 @@ class StreamingRunner:
     ) -> AsyncGenerator[str, None]:
         """Execute the agent with streaming of events."""
         try:
+            # No streaming adapter or authenticated turn provider exists yet.
+            # Required isolation must not execute the shared-session path.
+            from src.services.adk.runners.isolation_gate import isolation_required
+            if isolation_required(str(agent_id)):
+                raise PermissionError("isolated streaming dispatch unavailable")
             logger.info(
                 f"Starting streaming execution of agent {agent_id} for external_id {external_id}"
             )

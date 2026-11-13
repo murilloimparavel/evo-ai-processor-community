@@ -49,6 +49,7 @@ Features:
 """
 
 import uuid
+import os
 import json
 import base64
 import httpx
@@ -695,6 +696,23 @@ async def process_a2a_message(
 
         logger.info(f"📝 Method: {method}, ID: {request_id}")
 
+        from src.services.knowledge_runtime.pilot import bound_grants_required, isolated_root_required
+        try:
+            pilot_bound = bound_grants_required(str(agent_id))
+            pilot_isolated = isolated_root_required(str(agent_id))
+        except ValueError:
+            return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={
+                "jsonrpc": "2.0", "id": request_id,
+                "error": {"code": -32000, "message": "Authenticated runtime configuration unavailable"},
+            })
+        if ((pilot_isolated and not pilot_bound)
+                or (pilot_bound and method != "message/send")
+                or (request.headers.get("X-Knowledge-Grant") and not pilot_bound)):
+            return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={
+                "jsonrpc": "2.0", "id": request_id,
+                "error": {"code": -32000, "message": "Authenticated method unavailable"},
+            })
+
         if method == "message/send":
             return await handle_message_send(agent_id, params, request_id, request, db)
         elif method == "message/stream":
@@ -1026,6 +1044,47 @@ async def handle_message_send(
         )
     message_id = message.get("messageId")
     idempotency_key = params.get("idempotencyKey") or message_id
+    verified_knowledge_grant = None
+    # Bound grants are opt-in and verified before even looking up a cached
+    # response. Use the signed event as the ledger key, so issuing a second
+    # grant cannot trigger a second execution. This does not yet provide the
+    # isolated runner's trusted history/authority and is not enabled by default.
+    from src.services.knowledge_runtime.pilot import bound_grants_required
+    try:
+        require_bound_grant = bound_grants_required(str(agent_id))
+    except ValueError:
+        require_bound_grant = True  # Invalid deployment config can only deny.
+    if request.headers.get("X-Knowledge-Grant") and not require_bound_grant:
+        return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={
+            "jsonrpc": "2.0", "id": request_id,
+            "error": {"code": -32000, "message": "Authenticated pilot mismatch"},
+        })
+    if require_bound_grant:
+        from src.services.knowledge_runtime.grant import GrantVerifier, InvalidGrant, configured_public_keys
+        try:
+            from src.services.adk.runners.isolation_gate import isolation_required
+            if not isolation_required(str(agent_id)):
+                raise InvalidGrant("invalid_grant")
+            if push_notification_config:
+                raise InvalidGrant("invalid_grant")
+            verifier = GrantVerifier(
+                public_keys=configured_public_keys(),
+                issuer=os.environ["KNOWLEDGE_RUNTIME_GRANT_ISSUER"],
+                audience=os.environ["KNOWLEDGE_RUNTIME_GRANT_AUDIENCE"],
+                expected_account_scope=os.environ["KNOWLEDGE_RUNTIME_ACCOUNT_SCOPE"],
+            )
+            grant = verifier.verify_request(
+                request.headers.get("X-Knowledge-Grant", ""), request_body=await request.body(),
+                expected_root_agent_id=str(agent_id), expected_conversation_id=context_id,
+                expected_contact_id=params.get("userId", ""),
+            )
+            verified_knowledge_grant = grant
+            idempotency_key = grant.event_id
+        except (InvalidGrant, KeyError, TypeError, ValueError):
+            return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={
+                "jsonrpc": "2.0", "id": request_id,
+                "error": {"code": -32000, "message": "Authenticated context unavailable"},
+            })
     # CRM messages have a stable persisted UUID. Generic A2A callers that omit
     # one retain legacy behavior rather than being deduplicated on random IDs.
     cacheable = bool(idempotency_key) and not push_notification_config
@@ -1182,6 +1241,12 @@ async def handle_message_send(
         logger.info(f"📋 Using session_id: {session_id}")
 
         agent_execution_started = True
+        isolation_authority = None
+        if verified_knowledge_grant is not None:
+            from src.services.knowledge_runtime.isolation_authority import VerifiedIsolationAuthority
+            isolation_authority = VerifiedIsolationAuthority(
+                grant=verified_knowledge_grant, token=request.headers.get("X-Knowledge-Grant", ""), db=db
+            )
         result = await run_agent(
             agent_id=str(agent_id),
             external_id=context_id,  # contextId is the conversation UUID
@@ -1194,6 +1259,7 @@ async def handle_message_send(
             files=files if files else None,
             metadata=metadata,
             user_id=user_id,  # Pass contact_id as user_id
+            isolation_authority=isolation_authority,
         )
 
         final_response = result.get("final_response")
@@ -1228,6 +1294,10 @@ async def handle_message_send(
             structured,
             terminal_handoff=result.get("terminal_handoff") is True,
         )
+
+        proof = result.get("knowledge_provenance")
+        if isinstance(proof, str) and len(proof) <= 32768:
+            artifacts.append({"artifactId": str(uuid.uuid4()), "parts": [{"type": "data", "data": {"knowledge_provenance": proof}}]})
 
         # Create A2A compliant response with history
         task_response = create_task_response(
